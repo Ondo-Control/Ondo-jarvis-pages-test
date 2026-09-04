@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS Gesprächsspiel</title>
+  <!-- Von Amazon dokumentierter SDK-Endpunkt; Amazon bietet keine feste Version an. -->
+  <script src="https://cdn.html.games.alexa.a2z.com/alexa-html/latest/alexa-html.js"></script>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, sans-serif; }
+    body { margin: 0; background: #06111f; color: #f5f8ff; }
+    main { box-sizing: border-box; min-height: 100vh; padding: 44px; }
+    h1 { color: #69e2ff; font-size: 48px; margin: 0 0 10px; }
+    .rule { color: #c9d8ea; font-size: 21px; max-width: 900px; }
+    #round { color: #83f2ad; font-size: 29px; font-weight: bold; margin: 28px 0 12px; }
+    #status { font-size: 30px; margin: 0 0 18px; }
+    #countdown { color: #ffd166; font-size: 42px; font-weight: bold; min-height: 58px; }
+    ol { background: #10243b; border-radius: 18px; font-size: 21px; line-height: 1.45;
+         max-height: 290px; overflow: hidden; padding: 22px 22px 22px 58px; }
+    button { background: #b4233c; border: 0; border-radius: 14px; color: white;
+             font-size: 24px; padding: 16px 28px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>JARVIS</h1>
+    <p class="rule">Gesprächsspiel: JARVIS wartet nach jeder Antwort auf Alexas nächstes
+      Hörfenster. Ein begrenztes Notfallnetz greift nur ein, falls es ausbleibt.</p>
+    <p id="round">Notfallöffnungen: 0 von 40</p>
+    <p id="status">Initialisierung …</p>
+    <div id="countdown">–</div>
+    <ol id="events"></ol>
+    <button id="finish" type="button">Unterhaltung beenden</button>
+  </main>
+  <script>
+    "use strict";
+
+    const DEFAULT_WATCHDOG_SECONDS = 4;
+    const DEFAULT_MAX_REOPENS = 40;
+    const FALLBACK_OPEN_WATCHDOG_SECONDS = 12;
+    const FALLBACK_REQUEST_TIMEOUT_SECONDS = 8;
+    const BOOTSTRAP_OBSERVATION_SECONDS = 12;
+    const PROCESSING_TIMEOUT_SECONDS = 30;
+    // Amazon dokumentiert fuer die HTML-App maximal 30 Minuten. Die interne
+    // Grenze endet bewusst eine Minute frueher, damit JARVIS geordnet stoppt,
+    // bevor die Plattform die App-Sitzung beendet.
+    const HARD_RUNTIME_SECONDS = 1740;
+
+    let alexaClient = null;
+    let sequence = 0;
+    let watchdogSeconds = DEFAULT_WATCHDOG_SECONDS;
+    let maxReopens = DEFAULT_MAX_REOPENS;
+    let nativeWatchdogId = null;
+    let fallbackOpenWatchdogId = null;
+    let fallbackRequestWatchdogId = null;
+    let processingWatchdogId = null;
+    let bootstrapWatchdogId = null;
+    let hardStopId = null;
+    let micOpen = false;
+    let waitingForOpen = false;
+    let stopped = false;
+    let hardDeadline = 0;
+    let phase = "BOOTSTRAP";
+    let fallbackRequestEpoch = 0;
+    let finishSent = false;
+
+    const statusElement = document.getElementById("status");
+    const countdownElement = document.getElementById("countdown");
+    const eventsElement = document.getElementById("events");
+    const roundElement = document.getElementById("round");
+
+    function addEvent(label) {
+      const item = document.createElement("li");
+      item.textContent = `${new Date().toLocaleTimeString("de-DE")} — ${label}`;
+      eventsElement.prepend(item);
+      while (eventsElement.children.length > 7) {
+        eventsElement.removeChild(eventsElement.lastChild);
+      }
+    }
+
+    function setStatus(text) {
+      statusElement.textContent = text;
+      addEvent(text);
+    }
+
+    function clearNativeWatchdog() {
+      if (nativeWatchdogId !== null) window.clearTimeout(nativeWatchdogId);
+      nativeWatchdogId = null;
+    }
+
+    function clearFallbackOpenWatchdog() {
+      if (fallbackOpenWatchdogId !== null) window.clearTimeout(fallbackOpenWatchdogId);
+      fallbackOpenWatchdogId = null;
+    }
+
+    function clearFallbackRequestWatchdog() {
+      if (fallbackRequestWatchdogId !== null) window.clearTimeout(fallbackRequestWatchdogId);
+      fallbackRequestWatchdogId = null;
+    }
+
+    function clearProcessingWatchdog() {
+      if (processingWatchdogId !== null) window.clearTimeout(processingWatchdogId);
+      processingWatchdogId = null;
+    }
+
+    function clearBootstrapWatchdog() {
+      if (bootstrapWatchdogId !== null) window.clearTimeout(bootstrapWatchdogId);
+      bootstrapWatchdogId = null;
+    }
+
+    function clearTurnTimers() {
+      clearNativeWatchdog();
+      clearFallbackOpenWatchdog();
+      clearFallbackRequestWatchdog();
+      clearProcessingWatchdog();
+      clearBootstrapWatchdog();
+    }
+
+    function clearAllTimers() {
+      clearTurnTimers();
+      if (hardStopId !== null) window.clearTimeout(hardStopId);
+      hardStopId = null;
+    }
+
+    function sendFinishOnce() {
+      if (finishSent || !alexaClient) return;
+      finishSent = true;
+      try { alexaClient.skill.sendMessage({action: "finish"}); }
+      catch (_error) { addEvent("Beenden-Nachricht konnte nicht gesendet werden"); }
+    }
+
+    function finishVisible(reason, notifyBackend = true) {
+      if (stopped) {
+        if (notifyBackend) sendFinishOnce();
+        return;
+      }
+      stopped = true;
+      phase = "STOPPED";
+      micOpen = false;
+      waitingForOpen = false;
+      fallbackRequestEpoch += 1;
+      clearAllTimers();
+      countdownElement.textContent = "Fertig";
+      setStatus(reason);
+      if (notifyBackend) sendFinishOnce();
+    }
+
+    function armHardStop() {
+      if (stopped) return;
+      if (hardStopId !== null) window.clearTimeout(hardStopId);
+      hardStopId = window.setTimeout(() => {
+        hardStopId = null;
+        if (!stopped) finishVisible("Gesprächsspiel beendet — Laufzeitgrenze erreicht");
+      }, HARD_RUNTIME_SECONDS * 1000);
+    }
+
+    function armBootstrapObservation() {
+      clearBootstrapWatchdog();
+      if (stopped || micOpen) return;
+      phase = "BOOTSTRAP";
+      countdownElement.textContent = "Bereit";
+      setStatus("Erstes Hörfenster wird nativ erwartet");
+      bootstrapWatchdogId = window.setTimeout(() => {
+        bootstrapWatchdogId = null;
+        if (!stopped && phase === "BOOTSTRAP" && !micOpen) {
+          finishVisible("Erstes Hörfenster konnte nicht bestätigt werden");
+        }
+      }, BOOTSTRAP_OBSERVATION_SECONDS * 1000);
+    }
+
+    function armProcessingTimeout() {
+      clearProcessingWatchdog();
+      if (stopped) return;
+      phase = "PROCESSING";
+      processingWatchdogId = window.setTimeout(() => {
+        processingWatchdogId = null;
+        if (!stopped && phase === "PROCESSING" && !micOpen) {
+          finishVisible("Antwortverarbeitung hat Zeitlimit überschritten");
+        }
+      }, PROCESSING_TIMEOUT_SECONDS * 1000);
+    }
+
+    function armNativeOpenWatchdog(reason) {
+      clearNativeWatchdog();
+      if (stopped || micOpen || waitingForOpen) return;
+      if (Date.now() >= hardDeadline) {
+        finishVisible("Gesprächsspiel beendet — Laufzeitgrenze erreicht");
+        return;
+      }
+      phase = "AWAITING_NATIVE_OPEN";
+      countdownElement.textContent = "Bereit";
+      setStatus("Hörfenster wird geöffnet");
+      nativeWatchdogId = window.setTimeout(() => {
+        nativeWatchdogId = null;
+        if (!stopped && !micOpen && !waitingForOpen && phase === "AWAITING_NATIVE_OPEN") {
+          addEvent(`Notfallnetz nach ${reason}`);
+          requestListeningTurn();
+        }
+      }, watchdogSeconds * 1000);
+    }
+
+    function requestListeningTurn() {
+      clearNativeWatchdog();
+      if (stopped) return;
+      if (micOpen) {
+        waitingForOpen = false;
+        phase = "LISTENING";
+        countdownElement.textContent = "Sprich jetzt";
+        setStatus("Hörfenster bereits geöffnet");
+        return;
+      }
+      if (sequence >= maxReopens || Date.now() >= hardDeadline) {
+        finishVisible("Gesprächsspiel beendet — Laufzeitgrenze erreicht");
+        return;
+      }
+      sequence += 1;
+      waitingForOpen = true;
+      phase = "AWAITING_FALLBACK_OPEN";
+      const requestEpoch = ++fallbackRequestEpoch;
+      roundElement.textContent = `Notfallöffnungen: ${sequence} von ${maxReopens}`;
+      countdownElement.textContent = "Notfallnetz";
+      setStatus(`Notfallöffnung ${sequence} wird angefordert`);
+      clearFallbackRequestWatchdog();
+      fallbackRequestWatchdogId = window.setTimeout(() => {
+        fallbackRequestWatchdogId = null;
+        if (requestEpoch === fallbackRequestEpoch &&
+            !stopped && waitingForOpen && !micOpen) {
+          waitingForOpen = false;
+          fallbackRequestEpoch += 1;
+          addEvent("Notfallanfrage ohne Antwort — erneuter Versuch geplant");
+          armNativeOpenWatchdog("Notfallanfrage-Watchdog");
+        }
+      }, FALLBACK_REQUEST_TIMEOUT_SECONDS * 1000);
+      try {
+        alexaClient.skill.sendMessage(
+          {action: "continue_listening", sequence},
+          (response) => {
+            if (requestEpoch !== fallbackRequestEpoch || stopped || micOpen || !waitingForOpen) {
+              return;
+            }
+            clearFallbackRequestWatchdog();
+            const statusCode = response && Number.isInteger(response.statusCode)
+              ? response.statusCode
+              : 0;
+            if (statusCode < 200 || statusCode >= 300) {
+              finishVisible(`Folgerunde abgelehnt — Status ${statusCode}`);
+              return;
+            }
+            clearFallbackOpenWatchdog();
+            fallbackOpenWatchdogId = window.setTimeout(() => {
+              fallbackOpenWatchdogId = null;
+              if (requestEpoch === fallbackRequestEpoch &&
+                  !stopped && waitingForOpen && !micOpen) {
+                waitingForOpen = false;
+                fallbackRequestEpoch += 1;
+                addEvent("Notfallöffnung ohne Hörfenster — erneuter Versuch geplant");
+                armNativeOpenWatchdog("Notfallöffnungs-Watchdog");
+              }
+            }, FALLBACK_OPEN_WATCHDOG_SECONDS * 1000);
+          }
+        );
+      } catch (_error) {
+        finishVisible("Folgerunde konnte nicht angefordert werden");
+      }
+    }
+
+    document.getElementById("finish").addEventListener("click", () => {
+      finishVisible("Unterhaltung wird beendet");
+    });
+
+    Alexa.create({version: "1.1"})
+      .then(({alexa, message}) => {
+        alexaClient = alexa;
+        const config = message && message.conversation ? message.conversation : {};
+        if (Number.isInteger(config.watchdogSeconds) &&
+            config.watchdogSeconds >= 2 && config.watchdogSeconds <= 6) {
+          watchdogSeconds = config.watchdogSeconds;
+        }
+        if (Number.isInteger(config.maxReopens) &&
+            config.maxReopens >= 1 && config.maxReopens <= 40) {
+          maxReopens = config.maxReopens;
+        }
+        hardDeadline = Date.now() + HARD_RUNTIME_SECONDS * 1000;
+        armHardStop();
+        roundElement.textContent = `Notfallöffnungen: 0 von ${maxReopens}`;
+
+        alexaClient.voice.onMicrophoneOpened(() => {
+          if (stopped) return;
+          clearTurnTimers();
+          fallbackRequestEpoch += 1;
+          micOpen = true;
+          waitingForOpen = false;
+          phase = "LISTENING";
+          countdownElement.textContent = "Sprich jetzt";
+          setStatus("Hörfenster geöffnet");
+        });
+        alexaClient.voice.onMicrophoneClosed(() => {
+          if (stopped) return;
+          micOpen = false;
+          if (phase === "AWAITING_NATIVE_OPEN" ||
+              phase === "AWAITING_FALLBACK_OPEN" || waitingForOpen) {
+            addEvent("Mikrofon geschlossen während Hörfenster-Erwartung");
+            return;
+          }
+          if (phase === "SPEAKING") {
+            addEvent("Mikrofon geschlossen während Ausgabe");
+            return;
+          }
+          clearBootstrapWatchdog();
+          clearNativeWatchdog();
+          clearFallbackOpenWatchdog();
+          fallbackRequestEpoch += 1;
+          waitingForOpen = false;
+          countdownElement.textContent = "Denken";
+          setStatus("Frage wird verarbeitet");
+          armProcessingTimeout();
+        });
+        alexaClient.speech.onStarted(() => {
+          if (stopped) return;
+          // Die Launch-Begrüßung darf den reinen Bootstrap-Beobachtungspfad
+          // nicht in einen Re-Listen-Fallback umwandeln. Bis zur ersten
+          // bestätigten nativen Mikrofonöffnung bleibt BOOTSTRAP maßgeblich.
+          if (phase === "BOOTSTRAP") return;
+          clearBootstrapWatchdog();
+          clearProcessingWatchdog();
+          clearNativeWatchdog();
+          if (!waitingForOpen) phase = "SPEAKING";
+          countdownElement.textContent = "Antwort";
+          setStatus("JARVIS spricht");
+        });
+        alexaClient.speech.onStopped(() => {
+          if (stopped) return;
+          addEvent("JARVIS-Sprache beendet");
+          if (phase === "BOOTSTRAP") return;
+          if (waitingForOpen) return;
+          if (micOpen) {
+            phase = "LISTENING";
+            return;
+          }
+          if (phase !== "SPEAKING") return;
+          // shouldEndSession=false ist der normale Taktgeber und oeffnet das
+          // Mikrofon nativ. Die HTML-App greift nur ein, wenn das erwartete
+          // onMicrophoneOpened-Ereignis nach einer beobachteten Ausgabe ausbleibt.
+          armNativeOpenWatchdog("beendeter JARVIS-Antwort");
+        });
+        alexaClient.skill.onMessage((incoming) => {
+          if (stopped || !incoming || typeof incoming !== "object") return;
+          if (incoming.action === "listening" &&
+              Number.isInteger(incoming.sequence)) {
+            setStatus(`Notfallöffnung ${incoming.sequence} bestätigt`);
+          } else if (incoming.action === "answer") {
+            setStatus("Antwort wird ausgegeben");
+          }
+        });
+        // Die LaunchResponse oeffnet das erste Hoerfenster nativ. Der Bootstrap
+        // beobachtet diesen Vertrag nur und beendet bei ausbleibendem Nachweis
+        // kontrolliert; er sendet absichtlich keine continue_listening-Nachricht.
+        armBootstrapObservation();
+      })
+      .catch(() => finishVisible("JARVIS-Web-App konnte nicht initialisiert werden", false));
+  </script>
+</body>
+</html>
