@@ -17,23 +17,27 @@
     #countdown { color: #ffd166; font-size: 42px; font-weight: bold; min-height: 58px; }
     ol { background: #10243b; border-radius: 18px; font-size: 21px; line-height: 1.45;
          max-height: 290px; overflow: hidden; padding: 22px 22px 22px 58px; }
+    .controls { display: grid; gap: 14px; }
     button { background: #b4233c; border: 0; border-radius: 14px; color: white;
              font-size: 24px; padding: 16px 28px; }
-    #resumeButton { background: #00a86b; font-size: 28px; padding: 20px 40px;
-                    margin: 0 0 18px; width: 100%; }
+    #resume { background: #16865f; font-size: 30px; font-weight: bold; padding: 22px 30px; width: 100%; }
+    #resume[disabled] { opacity: 0.55; }
   </style>
 </head>
 <body>
   <main>
     <h1>JARVIS</h1>
-    <p class="rule">Gesprächsspiel: JARVIS wartet nach jeder Antwort auf Alexas nächstes
-      Hörfenster. Ein begrenztes Notfallnetz greift nur ein, falls es ausbleibt.</p>
-    <p id="round">Notfallöffnungen: 0 von 40</p>
+    <p class="rule">JARVIS bleibt nach einer Denkpause verfügbar. Solange das native
+      Hörfenster offen ist, sprich einfach weiter. Danach kannst du mit „Weiterreden“
+      dasselbe Gespräch fortsetzen.</p>
+    <p id="round">HTML-Öffnungen: 0 von 40</p>
     <p id="status">Initialisierung …</p>
     <div id="countdown">–</div>
     <ol id="events"></ol>
-    <button id="resumeButton" type="button" style="display: none;">Weiterreden</button>
-    <button id="finish" type="button">Unterhaltung beenden</button>
+    <div class="controls">
+      <button id="resume" type="button" hidden>Weiterreden</button>
+      <button id="finish" type="button">Unterhaltung beenden</button>
+    </div>
   </main>
   <script>
     "use strict";
@@ -43,7 +47,11 @@
     const FALLBACK_OPEN_WATCHDOG_SECONDS = 12;
     const FALLBACK_REQUEST_TIMEOUT_SECONDS = 8;
     const BOOTSTRAP_OBSERVATION_SECONDS = 12;
-    const PROCESSING_TIMEOUT_SECONDS = 30;
+    // Alexa liefert kein separates No-Input-Event an die Web-App. Deshalb ist
+    // Mikrofon-geschlossen allein kein Schweigebeweis. Die Web-App wartet
+    // länger als der 30-s-LLM-Timeout auf eine echte Skill-Antwort; bleibt sie
+    // aus, wird nur die UI pausiert. Es wird weder beendet noch neu zugehört.
+    const SILENCE_PAUSE_SECONDS = 35;
     // Amazon dokumentiert fuer die HTML-App maximal 30 Minuten. Die interne
     // Grenze endet bewusst eine Minute frueher, damit JARVIS geordnet stoppt,
     // bevor die Plattform die App-Sitzung beendet.
@@ -56,7 +64,7 @@
     let nativeWatchdogId = null;
     let fallbackOpenWatchdogId = null;
     let fallbackRequestWatchdogId = null;
-    let processingWatchdogId = null;
+    let turnResultWatchdogId = null;
     let bootstrapWatchdogId = null;
     let hardStopId = null;
     let micOpen = false;
@@ -66,17 +74,13 @@
     let phase = "BOOTSTRAP";
     let fallbackRequestEpoch = 0;
     let finishSent = false;
-    let processingPauseOnTimeout = false;
-    let noInputRelistenCandidate = false;
-    let noInputRelistenExpected = false;
-    let answerMessageSeen = false;
-    let speechStartedWithoutAnswer = false;
-    let resumeRequested = false;
+    let resumeSequence = null;
 
     const statusElement = document.getElementById("status");
     const countdownElement = document.getElementById("countdown");
     const eventsElement = document.getElementById("events");
     const roundElement = document.getElementById("round");
+    const resumeElement = document.getElementById("resume");
 
     function addEvent(label) {
       const item = document.createElement("li");
@@ -90,30 +94,6 @@
     function setStatus(text) {
       statusElement.textContent = text;
       addEvent(text);
-    }
-
-    function setResumeVisible(visible) {
-      const button = document.getElementById("resumeButton");
-      if (!button) return;
-      button.style.display = visible ? "block" : "none";
-      button.disabled = !visible;
-    }
-
-    function enterPausedState(reason = "Gespräch pausiert") {
-      if (stopped) return;
-      clearTurnTimers();
-      fallbackRequestEpoch += 1;
-      micOpen = false;
-      waitingForOpen = false;
-      processingPauseOnTimeout = false;
-      noInputRelistenCandidate = false;
-      noInputRelistenExpected = false;
-      speechStartedWithoutAnswer = false;
-      resumeRequested = false;
-      phase = "PAUSED";
-      countdownElement.textContent = "Pausiert";
-      setStatus(reason);
-      setResumeVisible(true);
     }
 
     function clearNativeWatchdog() {
@@ -131,9 +111,9 @@
       fallbackRequestWatchdogId = null;
     }
 
-    function clearProcessingWatchdog() {
-      if (processingWatchdogId !== null) window.clearTimeout(processingWatchdogId);
-      processingWatchdogId = null;
+    function clearTurnResultWatchdog() {
+      if (turnResultWatchdogId !== null) window.clearTimeout(turnResultWatchdogId);
+      turnResultWatchdogId = null;
     }
 
     function clearBootstrapWatchdog() {
@@ -145,7 +125,7 @@
       clearNativeWatchdog();
       clearFallbackOpenWatchdog();
       clearFallbackRequestWatchdog();
-      clearProcessingWatchdog();
+      clearTurnResultWatchdog();
       clearBootstrapWatchdog();
     }
 
@@ -171,12 +151,28 @@
       phase = "STOPPED";
       micOpen = false;
       waitingForOpen = false;
+      resumeSequence = null;
       fallbackRequestEpoch += 1;
       clearAllTimers();
+      resumeElement.hidden = true;
+      resumeElement.disabled = false;
       countdownElement.textContent = "Fertig";
-      setResumeVisible(false);
       setStatus(reason);
       if (notifyBackend) sendFinishOnce();
+    }
+
+    function enterPausedState(reason = "Gespräch pausiert") {
+      if (stopped) return;
+      phase = "PAUSED";
+      micOpen = false;
+      waitingForOpen = false;
+      resumeSequence = null;
+      fallbackRequestEpoch += 1;
+      clearTurnTimers();
+      resumeElement.disabled = false;
+      resumeElement.hidden = false;
+      countdownElement.textContent = "Pausiert";
+      setStatus(reason);
     }
 
     function armHardStop() {
@@ -184,7 +180,7 @@
       if (hardStopId !== null) window.clearTimeout(hardStopId);
       hardStopId = window.setTimeout(() => {
         hardStopId = null;
-        if (!stopped) finishVisible("Gesprächsspiel beendet — Laufzeitgrenze erreicht");
+        if (!stopped) finishVisible("Gespräch beendet — Laufzeitgrenze erreicht");
       }, HARD_RUNTIME_SECONDS * 1000);
     }
 
@@ -202,28 +198,23 @@
       }, BOOTSTRAP_OBSERVATION_SECONDS * 1000);
     }
 
-    function armProcessingTimeout(pauseOnTimeout = false) {
-      clearProcessingWatchdog();
+    function armSilencePause() {
+      clearTurnResultWatchdog();
       if (stopped) return;
-      phase = "PROCESSING";
-      processingPauseOnTimeout = pauseOnTimeout;
-      processingWatchdogId = window.setTimeout(() => {
-        processingWatchdogId = null;
-        if (!stopped && phase === "PROCESSING" && !micOpen) {
-          if (processingPauseOnTimeout) {
-            enterPausedState();
-          } else {
-            finishVisible("Antwortverarbeitung hat Zeitlimit überschritten");
-          }
+      phase = "AWAITING_TURN_RESULT";
+      turnResultWatchdogId = window.setTimeout(() => {
+        turnResultWatchdogId = null;
+        if (!stopped && phase === "AWAITING_TURN_RESULT" && !micOpen) {
+          enterPausedState();
         }
-      }, PROCESSING_TIMEOUT_SECONDS * 1000);
+      }, SILENCE_PAUSE_SECONDS * 1000);
     }
 
     function armNativeOpenWatchdog(reason) {
       clearNativeWatchdog();
-      if (stopped || micOpen || waitingForOpen) return;
+      if (stopped || micOpen || waitingForOpen || phase === "PAUSED") return;
       if (Date.now() >= hardDeadline) {
-        finishVisible("Gesprächsspiel beendet — Laufzeitgrenze erreicht");
+        finishVisible("Gespräch beendet — Laufzeitgrenze erreicht");
         return;
       }
       phase = "AWAITING_NATIVE_OPEN";
@@ -233,38 +224,39 @@
         nativeWatchdogId = null;
         if (!stopped && !micOpen && !waitingForOpen && phase === "AWAITING_NATIVE_OPEN") {
           addEvent(`Notfallnetz nach ${reason}`);
-          requestListeningTurn();
+          requestListeningTurn(false);
         }
       }, watchdogSeconds * 1000);
     }
 
-    function requestListeningTurn(mode = "fallback") {
-      const isResume = mode === "resume";
+    function requestListeningTurn(isResume) {
       clearNativeWatchdog();
-      if (stopped) return;
+      if (stopped || waitingForOpen) return;
       if (micOpen) {
         waitingForOpen = false;
         phase = "LISTENING";
+        resumeSequence = null;
+        resumeElement.hidden = true;
+        resumeElement.disabled = false;
         countdownElement.textContent = "Sprich jetzt";
         setStatus("Hörfenster bereits geöffnet");
         return;
       }
       if (sequence >= maxReopens || Date.now() >= hardDeadline) {
-        finishVisible("Gesprächsspiel beendet — Laufzeitgrenze erreicht");
+        if (isResume) enterPausedState("Weiterreden ist in dieser Sitzung nicht mehr verfügbar");
+        else finishVisible("Gespräch beendet — Laufzeitgrenze erreicht");
         return;
       }
       sequence += 1;
       waitingForOpen = true;
       phase = "AWAITING_FALLBACK_OPEN";
       const requestEpoch = ++fallbackRequestEpoch;
-      if (isResume) {
-        countdownElement.textContent = "Weiterreden";
-        setStatus("Hörfenster wird wieder geöffnet");
-      } else {
-        roundElement.textContent = `Notfallöffnungen: ${sequence} von ${maxReopens}`;
-        countdownElement.textContent = "Notfallnetz";
-        setStatus(`Notfallöffnung ${sequence} wird angefordert`);
-      }
+      if (isResume) resumeSequence = sequence;
+      roundElement.textContent = `HTML-Öffnungen: ${sequence} von ${maxReopens}`;
+      countdownElement.textContent = isResume ? "Weiterreden" : "Notfallnetz";
+      setStatus(isResume
+        ? "Hörfenster zum Weiterreden wird angefordert"
+        : `Notfallöffnung ${sequence} wird angefordert`);
       clearFallbackRequestWatchdog();
       fallbackRequestWatchdogId = window.setTimeout(() => {
         fallbackRequestWatchdogId = null;
@@ -273,7 +265,7 @@
           waitingForOpen = false;
           fallbackRequestEpoch += 1;
           if (isResume) {
-            enterPausedState("Weiterreden konnte nicht bestätigt werden");
+            enterPausedState("Hörfenster konnte nicht geöffnet werden — tippe erneut");
           } else {
             addEvent("Notfallanfrage ohne Antwort — erneuter Versuch geplant");
             armNativeOpenWatchdog("Notfallanfrage-Watchdog");
@@ -292,11 +284,9 @@
               ? response.statusCode
               : 0;
             if (statusCode < 200 || statusCode >= 300) {
-              if (isResume) {
-                enterPausedState(`Weiterreden abgelehnt — Status ${statusCode}`);
-              } else {
-                finishVisible(`Folgerunde abgelehnt — Status ${statusCode}`);
-              }
+              waitingForOpen = false;
+              if (isResume) enterPausedState(`Weiterreden abgelehnt — Status ${statusCode}`);
+              else finishVisible(`Folgerunde abgelehnt — Status ${statusCode}`);
               return;
             }
             clearFallbackOpenWatchdog();
@@ -307,7 +297,7 @@
                 waitingForOpen = false;
                 fallbackRequestEpoch += 1;
                 if (isResume) {
-                  enterPausedState("Weiterreden ohne Hörfenster");
+                  enterPausedState("Hörfenster blieb geschlossen — tippe erneut");
                 } else {
                   addEvent("Notfallöffnung ohne Hörfenster — erneuter Versuch geplant");
                   armNativeOpenWatchdog("Notfallöffnungs-Watchdog");
@@ -317,33 +307,23 @@
           }
         );
       } catch (_error) {
-        if (isResume) {
-          enterPausedState("Weiterreden konnte nicht angefordert werden");
-        } else {
-          finishVisible("Folgerunde konnte nicht angefordert werden");
-        }
+        waitingForOpen = false;
+        if (isResume) enterPausedState("Weiterreden konnte nicht gestartet werden — tippe erneut");
+        else finishVisible("Folgerunde konnte nicht angefordert werden");
       }
     }
 
     function requestResumeListening() {
-      if (stopped || phase !== "PAUSED" || resumeRequested || waitingForOpen || micOpen) return;
-      if (Date.now() >= hardDeadline) {
-        finishVisible("Gesprächsspiel beendet — Laufzeitgrenze erreicht");
-        return;
-      }
-      resumeRequested = true;
-      setResumeVisible(false);
-      requestListeningTurn("resume");
-    }
-
-    const resumeButton = document.getElementById("resumeButton");
-    if (resumeButton) {
-      resumeButton.addEventListener("click", requestResumeListening);
+      if (stopped || phase !== "PAUSED" || waitingForOpen) return;
+      resumeElement.disabled = true;
+      resumeElement.hidden = true;
+      requestListeningTurn(true);
     }
 
     document.getElementById("finish").addEventListener("click", () => {
       finishVisible("Unterhaltung wird beendet");
     });
+    resumeElement.addEventListener("click", requestResumeListening);
 
     Alexa.create({version: "1.1"})
       .then(({alexa, message}) => {
@@ -359,20 +339,17 @@
         }
         hardDeadline = Date.now() + HARD_RUNTIME_SECONDS * 1000;
         armHardStop();
-        roundElement.textContent = `Notfallöffnungen: 0 von ${maxReopens}`;
+        roundElement.textContent = `HTML-Öffnungen: 0 von ${maxReopens}`;
 
         alexaClient.voice.onMicrophoneOpened(() => {
           if (stopped) return;
-          const reopenedWhileProcessing = phase === "PROCESSING";
           clearTurnTimers();
           fallbackRequestEpoch += 1;
           micOpen = true;
           waitingForOpen = false;
-          noInputRelistenCandidate = noInputRelistenExpected || reopenedWhileProcessing;
-          noInputRelistenExpected = false;
-          processingPauseOnTimeout = false;
-          resumeRequested = false;
-          setResumeVisible(false);
+          resumeSequence = null;
+          resumeElement.hidden = true;
+          resumeElement.disabled = false;
           phase = "LISTENING";
           countdownElement.textContent = "Sprich jetzt";
           setStatus("Hörfenster geöffnet");
@@ -394,13 +371,9 @@
           clearFallbackOpenWatchdog();
           fallbackRequestEpoch += 1;
           waitingForOpen = false;
-          answerMessageSeen = false;
-          speechStartedWithoutAnswer = false;
-          countdownElement.textContent = noInputRelistenCandidate ? "Warten" : "Denken";
-          setStatus(noInputRelistenCandidate ? "Warte auf Fortsetzung" : "Frage wird verarbeitet");
-          const pauseAfterTimeout = noInputRelistenCandidate;
-          noInputRelistenCandidate = false;
-          armProcessingTimeout(pauseAfterTimeout);
+          countdownElement.textContent = "–";
+          setStatus("Ich warte");
+          armSilencePause();
         });
         alexaClient.speech.onStarted(() => {
           if (stopped) return;
@@ -408,12 +381,9 @@
           // nicht in einen Re-Listen-Fallback umwandeln. Bis zur ersten
           // bestätigten nativen Mikrofonöffnung bleibt BOOTSTRAP maßgeblich.
           if (phase === "BOOTSTRAP") return;
-          speechStartedWithoutAnswer = phase === "PROCESSING" && !answerMessageSeen;
           clearBootstrapWatchdog();
-          clearProcessingWatchdog();
+          clearTurnResultWatchdog();
           clearNativeWatchdog();
-          processingPauseOnTimeout = false;
-          setResumeVisible(false);
           if (!waitingForOpen) phase = "SPEAKING";
           countdownElement.textContent = "Antwort";
           setStatus("JARVIS spricht");
@@ -428,8 +398,6 @@
             return;
           }
           if (phase !== "SPEAKING") return;
-          noInputRelistenExpected = speechStartedWithoutAnswer && !answerMessageSeen;
-          speechStartedWithoutAnswer = false;
           // shouldEndSession=false ist der normale Taktgeber und oeffnet das
           // Mikrofon nativ. Die HTML-App greift nur ein, wenn das erwartete
           // onMicrophoneOpened-Ereignis nach einer beobachteten Ausgabe ausbleibt.
@@ -437,16 +405,17 @@
         });
         alexaClient.skill.onMessage((incoming) => {
           if (stopped || !incoming || typeof incoming !== "object") return;
-          if (incoming.action === "listening" &&
-              Number.isInteger(incoming.sequence)) {
-            setStatus(`Notfallöffnung ${incoming.sequence} bestätigt`);
+          if (incoming.action === "listening" && Number.isInteger(incoming.sequence)) {
+            if (incoming.sequence === resumeSequence) {
+              setStatus("Weiterreden bestätigt — Hörfenster öffnet");
+            } else {
+              setStatus(`Notfallöffnung ${incoming.sequence} bestätigt`);
+            }
           } else if (incoming.action === "answer") {
-            answerMessageSeen = true;
-            speechStartedWithoutAnswer = false;
-            noInputRelistenExpected = false;
-            noInputRelistenCandidate = false;
-            processingPauseOnTimeout = false;
-            setResumeVisible(false);
+            clearTurnResultWatchdog();
+            if (phase === "AWAITING_TURN_RESULT") phase = "PROCESSING";
+            resumeElement.hidden = true;
+            resumeElement.disabled = false;
             setStatus("Antwort wird ausgegeben");
           }
         });
