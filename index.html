@@ -52,10 +52,6 @@
     // länger als der 30-s-LLM-Timeout auf eine echte Skill-Antwort; bleibt sie
     // aus, wird nur die UI pausiert. Es wird weder beendet noch neu zugehört.
     const SILENCE_PAUSE_SECONDS = 35;
-    // Amazon dokumentiert fuer die HTML-App maximal 30 Minuten. Die interne
-    // Grenze endet bewusst eine Minute frueher, damit JARVIS geordnet stoppt,
-    // bevor die Plattform die App-Sitzung beendet.
-    const HARD_RUNTIME_SECONDS = 1740;
 
     let alexaClient = null;
     let sequence = 0;
@@ -66,11 +62,9 @@
     let fallbackRequestWatchdogId = null;
     let turnResultWatchdogId = null;
     let bootstrapWatchdogId = null;
-    let hardStopId = null;
     let micOpen = false;
     let waitingForOpen = false;
     let stopped = false;
-    let hardDeadline = 0;
     let phase = "BOOTSTRAP";
     let fallbackRequestEpoch = 0;
     let finishSent = false;
@@ -131,8 +125,6 @@
 
     function clearAllTimers() {
       clearTurnTimers();
-      if (hardStopId !== null) window.clearTimeout(hardStopId);
-      hardStopId = null;
     }
 
     function sendFinishOnce() {
@@ -175,15 +167,6 @@
       setStatus(reason);
     }
 
-    function armHardStop() {
-      if (stopped) return;
-      if (hardStopId !== null) window.clearTimeout(hardStopId);
-      hardStopId = window.setTimeout(() => {
-        hardStopId = null;
-        if (!stopped) finishVisible("Gespräch beendet — Laufzeitgrenze erreicht");
-      }, HARD_RUNTIME_SECONDS * 1000);
-    }
-
     function armBootstrapObservation() {
       clearBootstrapWatchdog();
       if (stopped || micOpen) return;
@@ -213,10 +196,6 @@
     function armNativeOpenWatchdog(reason) {
       clearNativeWatchdog();
       if (stopped || micOpen || waitingForOpen || phase === "PAUSED") return;
-      if (Date.now() >= hardDeadline) {
-        finishVisible("Gespräch beendet — Laufzeitgrenze erreicht");
-        return;
-      }
       phase = "AWAITING_NATIVE_OPEN";
       countdownElement.textContent = "Bereit";
       setStatus("Hörfenster wird geöffnet");
@@ -242,9 +221,9 @@
         setStatus("Hörfenster bereits geöffnet");
         return;
       }
-      if (sequence >= maxReopens || Date.now() >= hardDeadline) {
+      if (sequence >= maxReopens) {
         if (isResume) enterPausedState("Weiterreden ist in dieser Sitzung nicht mehr verfügbar");
-        else finishVisible("Gespräch beendet — Laufzeitgrenze erreicht");
+        else finishVisible("Gespräch beendet — maximale Notfallöffnungen erreicht");
         return;
       }
       sequence += 1;
@@ -337,8 +316,6 @@
             config.maxReopens >= 1 && config.maxReopens <= 40) {
           maxReopens = config.maxReopens;
         }
-        hardDeadline = Date.now() + HARD_RUNTIME_SECONDS * 1000;
-        armHardStop();
         roundElement.textContent = `HTML-Öffnungen: 0 von ${maxReopens}`;
 
         alexaClient.voice.onMicrophoneOpened(() => {
