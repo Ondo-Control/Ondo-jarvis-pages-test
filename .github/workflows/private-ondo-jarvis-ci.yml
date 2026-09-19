@@ -7,12 +7,16 @@ on:
         description: "Exact 40-character commit SHA from Ondo-Control/ondo-jarvis"
         required: true
         type: string
+  push:
+    branches: [main]
+    paths:
+      - ".ci-trigger/ondo-jarvis-sha.txt"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ondo-jarvis-private-ci-${{ inputs.private_sha }}
+  group: ondo-jarvis-private-ci-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -21,20 +25,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Validate requested private SHA
+      - name: Checkout public relay repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Resolve and validate requested private SHA
+        id: target
         env:
-          TARGET_SHA: ${{ inputs.private_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_SHA: ${{ inputs.private_sha }}
         run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TARGET_SHA="$MANUAL_SHA"
+          else
+            TARGET_SHA="$(tr -d '[:space:]' < .ci-trigger/ondo-jarvis-sha.txt)"
+          fi
           if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::private_sha must be an exact 40-character lowercase commit SHA"
             exit 2
           fi
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Checkout private ONDO JARVIS commit
         uses: actions/checkout@v4
         with:
           repository: Ondo-Control/ondo-jarvis
-          ref: ${{ inputs.private_sha }}
+          ref: ${{ steps.target.outputs.sha }}
           token: ${{ secrets.ONDO_JARVIS_READ_TOKEN }}
           persist-credentials: false
           fetch-depth: 0
@@ -43,7 +61,7 @@ jobs:
       - name: Verify checked-out commit
         working-directory: private-ondo-jarvis
         env:
-          TARGET_SHA: ${{ inputs.private_sha }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 
@@ -69,20 +87,34 @@ jobs:
     needs: pruefe
     if: always()
     steps:
-      - name: Validate requested private SHA
+      - name: Checkout public relay repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Resolve and validate requested private SHA
+        id: target
         env:
-          TARGET_SHA: ${{ inputs.private_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_SHA: ${{ inputs.private_sha }}
         run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TARGET_SHA="$MANUAL_SHA"
+          else
+            TARGET_SHA="$(tr -d '[:space:]' < .ci-trigger/ondo-jarvis-sha.txt)"
+          fi
           if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::private_sha must be an exact 40-character lowercase commit SHA"
             exit 2
           fi
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Checkout private ONDO JARVIS commit
         uses: actions/checkout@v4
         with:
           repository: Ondo-Control/ondo-jarvis
-          ref: ${{ inputs.private_sha }}
+          ref: ${{ steps.target.outputs.sha }}
           token: ${{ secrets.ONDO_JARVIS_READ_TOKEN }}
           persist-credentials: false
           fetch-depth: 1
@@ -91,7 +123,7 @@ jobs:
       - name: Verify checked-out commit
         working-directory: private-ondo-jarvis
         env:
-          TARGET_SHA: ${{ inputs.private_sha }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 
