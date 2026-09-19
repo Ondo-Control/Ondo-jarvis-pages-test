@@ -88,9 +88,9 @@ jobs:
       - name: Ausfuehren von tools/pruefe.py
         working-directory: private-ondo-jarvis
         env:
-          GITHUB_SHA: ${{ steps.target.outputs.sha }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
-          python3 tools/pruefe.py
+          python3 -c 'import os, runpy; os.environ["GITHUB_SHA"] = os.environ["TARGET_SHA"]; runpy.run_path("tools/pruefe.py", run_name="__main__")'
 
   tests:
     name: Anwendungstests
