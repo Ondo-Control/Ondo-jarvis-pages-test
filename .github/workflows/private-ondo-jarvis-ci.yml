@@ -65,6 +65,16 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
 
+      - name: Prepare private repository CI context
+        working-directory: private-ondo-jarvis
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          git switch -C relay-target "$TARGET_SHA"
+          git update-ref refs/remotes/origin/relay-target "$TARGET_SHA"
+          test "$(git branch --show-current)" = "relay-target"
+          test "$(git rev-parse origin/relay-target)" = "$TARGET_SHA"
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -77,6 +87,8 @@ jobs:
 
       - name: Ausfuehren von tools/pruefe.py
         working-directory: private-ondo-jarvis
+        env:
+          GITHUB_SHA: ${{ steps.target.outputs.sha }}
         run: |
           python3 tools/pruefe.py
 
