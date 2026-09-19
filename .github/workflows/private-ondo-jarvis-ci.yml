@@ -1,0 +1,115 @@
+name: ONDO JARVIS Private CI Relay
+
+on:
+  workflow_dispatch:
+    inputs:
+      private_sha:
+        description: "Exact 40-character commit SHA from Ondo-Control/ondo-jarvis"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ondo-jarvis-private-ci-${{ inputs.private_sha }}
+  cancel-in-progress: false
+
+jobs:
+  pruefe:
+    name: Projektpruefung
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate requested private SHA
+        env:
+          TARGET_SHA: ${{ inputs.private_sha }}
+        run: |
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::private_sha must be an exact 40-character lowercase commit SHA"
+            exit 2
+          fi
+
+      - name: Checkout private ONDO JARVIS commit
+        uses: actions/checkout@v4
+        with:
+          repository: Ondo-Control/ondo-jarvis
+          ref: ${{ inputs.private_sha }}
+          token: ${{ secrets.ONDO_JARVIS_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 0
+          path: private-ondo-jarvis
+
+      - name: Verify checked-out commit
+        working-directory: private-ondo-jarvis
+        env:
+          TARGET_SHA: ${{ inputs.private_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: private-ondo-jarvis
+        run: |
+          python3 -m pip install -r requirements-test.txt
+
+      - name: Ausfuehren von tools/pruefe.py
+        working-directory: private-ondo-jarvis
+        run: |
+          python3 tools/pruefe.py
+
+  tests:
+    name: Anwendungstests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: pruefe
+    if: always()
+    steps:
+      - name: Validate requested private SHA
+        env:
+          TARGET_SHA: ${{ inputs.private_sha }}
+        run: |
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::private_sha must be an exact 40-character lowercase commit SHA"
+            exit 2
+          fi
+
+      - name: Checkout private ONDO JARVIS commit
+        uses: actions/checkout@v4
+        with:
+          repository: Ondo-Control/ondo-jarvis
+          ref: ${{ inputs.private_sha }}
+          token: ${{ secrets.ONDO_JARVIS_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: private-ondo-jarvis
+
+      - name: Verify checked-out commit
+        working-directory: private-ondo-jarvis
+        env:
+          TARGET_SHA: ${{ inputs.private_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: private-ondo-jarvis
+        run: |
+          python3 -m pip install -r requirements-test.txt
+
+      - name: Ausfuehren von pytest
+        working-directory: private-ondo-jarvis
+        run: |
+          if [ -d "tests" ] && ls tests/test_*.py >/dev/null 2>&1; then
+            python3 -m pytest -q
+          else
+            echo "Keine Anwendungstests vorhanden - überspringen"
+          fi
