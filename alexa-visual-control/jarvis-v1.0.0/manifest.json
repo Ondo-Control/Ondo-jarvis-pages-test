@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "ONDO JARVIS Alexa Control",
+  "version": "1.0.0",
+  "description": "Isolated visible-only mouse/keyboard control for the Ondo Jarvis Alexa Developer Console skill.",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://developer.amazon.com/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://developer.amazon.com/*"
+      ],
+      "js": [
+        "content-script.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "ONDO JARVIS Alexa Control"
+  }
+}
