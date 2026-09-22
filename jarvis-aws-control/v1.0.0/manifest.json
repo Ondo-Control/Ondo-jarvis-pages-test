@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "ONDO JARVIS AWS Control",
+  "version": "1.0.0",
+  "description": "Fail-closed single-purpose controller for ONDO JARVIS Alexa-hosted AWS resources.",
+  "permissions": ["debugger", "tabs", "storage"],
+  "host_permissions": [
+    "https://*.console.aws.amazon.com/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.console.aws.amazon.com/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "ONDO JARVIS AWS Control"
+  }
+}
