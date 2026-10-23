@@ -157,3 +157,77 @@ jobs:
           else
             echo "Keine Anwendungstests vorhanden - überspringen"
           fi
+
+  real_release_candidate:
+    name: Offline-Paketbau (echtes npm, kein Artefakt-Upload)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [pruefe, tests]
+    steps:
+      - name: Checkout public SHA trigger only
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Resolve exact private commit
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_SHA: ${{ inputs.private_sha }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TARGET_SHA="$MANUAL_SHA"
+          else
+            TARGET_SHA="$(tr -d '[:space:]' < .ci-trigger/ondo-jarvis-sha.txt)"
+          fi
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::invalid pinned private SHA"
+            exit 2
+          fi
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact private source without persisting token
+        uses: actions/checkout@v4
+        with:
+          repository: Ondo-Control/ondo-jarvis
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.ONDO_JARVIS_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: private-ondo-jarvis
+
+      - name: Verify exact source SHA
+        working-directory: private-ondo-jarvis
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+
+      - name: Set up Node and Python (no deployment)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install real npm dependencies and generate real lockfile
+        working-directory: private-ondo-jarvis/alexa-hosted-skill/lambda
+        run: |
+          npm install --omit=dev --ignore-scripts --no-audit --no-fund
+          npm ls --omit=dev --depth=0
+          node -e "const m=require('./index.js'); if(typeof m.handler!=='function') process.exit(1); console.log('REAL_ALEXA_HANDLER_MODULE_LOAD_PASS')"
+
+      - name: Verify actual pinned Alexa/Cloudflare V3 release in memory
+        working-directory: private-ondo-jarvis
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          python3 tools/verify_real_relay_v3_rc.py --source-sha "$TARGET_SHA"
+          echo "REAL_NPM_OFFLINE_RC_PASS_NO_ARTIFACT_UPLOAD"
+        # Deliberately NEVER call actions/upload-artifact: the workflow repository
+        # is PUBLIC while the checked-out ONDO JARVIS source is PRIVATE.
+        # The CI output exposes only SHA/counts, not the archive, source or secrets.
