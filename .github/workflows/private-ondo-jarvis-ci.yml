@@ -227,7 +227,8 @@ jobs:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           python3 tools/verify_real_relay_v3_rc.py --source-sha "$TARGET_SHA"
-          echo "REAL_NPM_OFFLINE_RC_PASS_NO_ARTIFACT_UPLOAD"
+          python3 tools/build_jarvis_aggregate_rc.py --source-sha "$TARGET_SHA"
+          echo "REAL_NPM_COMBINED_RC_PASS_NO_ARTIFACT_UPLOAD"
         # Deliberately NEVER call actions/upload-artifact: the workflow repository
         # is PUBLIC while the checked-out ONDO JARVIS source is PRIVATE.
         # The CI output exposes only SHA/counts, not the archive, source or secrets.
