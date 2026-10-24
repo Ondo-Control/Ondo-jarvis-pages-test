@@ -232,3 +232,63 @@ jobs:
         # Deliberately NEVER call actions/upload-artifact: the workflow repository
         # is PUBLIC while the checked-out ONDO JARVIS source is PRIVATE.
         # The CI output exposes only SHA/counts, not the archive, source or secrets.
+
+  private_delivery_upload:
+    name: Private ZIP-Auslieferung (kein Public Artifact)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [pruefe, tests, real_release_candidate]
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout public pinned-SHA trigger
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify and export exact private commit SHA
+        id: target
+        run: |
+          TARGET_SHA="$(tr -d '[:space:]' < .ci-trigger/ondo-jarvis-sha.txt)"
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::invalid pinned SHA"
+            exit 2
+          fi
+          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+      - name: Checkout private source via existing secret
+        uses: actions/checkout@v4
+        with:
+          repository: Ondo-Control/ondo-jarvis
+          ref: ${{ steps.target.outputs.sha }}
+          token: ${{ secrets.ONDO_JARVIS_READ_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 1
+          path: private-ondo-jarvis
+      - name: Verify exact source commit
+        working-directory: private-ondo-jarvis
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+      - name: Set up official Node 22 and Python 3.12
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install actual Alexa npm dependencies (no scripts)
+        working-directory: private-ondo-jarvis/alexa-hosted-skill/lambda
+        run: |
+          npm install --omit=dev --ignore-scripts --no-audit --no-fund
+          npm ls --omit=dev --depth=0
+      - name: Save verified ZIP exclusively in PRIVATE repository branch
+        working-directory: private-ondo-jarvis
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          ONDO_PRIVATE_GITHUB_PUBLISH_TOKEN: ${{ secrets.ONDO_JARVIS_READ_TOKEN }}
+        run: |
+          python3 tools/verify_real_relay_v3_rc.py --source-sha "$TARGET_SHA"
+          python3 tools/publish_private_jarvis_rc.py --source-sha "$TARGET_SHA"
+        # A fine-grained token with Contents: Read/Write for the private repo
+        # is required; if the current read-only token lacks Write, this job
+        # MUST fail without uploading the private file anywhere else.
+        # No actions/upload-artifact, public Git commit, or release assets.
