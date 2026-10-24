@@ -284,11 +284,13 @@ jobs:
         working-directory: private-ondo-jarvis
         env:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
-          ONDO_PRIVATE_GITHUB_PUBLISH_TOKEN: ${{ secrets.ONDO_JARVIS_READ_TOKEN }}
+          ONDO_PRIVATE_GITHUB_PUBLISH_TOKEN: ${{ secrets.ONDO_JARVIS_RELEASE_WRITE_TOKEN }}
         run: |
           python3 tools/verify_real_relay_v3_rc.py --source-sha "$TARGET_SHA"
           python3 tools/publish_private_jarvis_rc.py --source-sha "$TARGET_SHA"
-        # A fine-grained token with Contents: Read/Write for the private repo
-        # is required; if the current read-only token lacks Write, this job
-        # MUST fail without uploading the private file anywhere else.
+        # Use a SEPARATE short-lived fine-grained GitHub token stored ONLY as
+        # ONDO_JARVIS_RELEASE_WRITE_TOKEN in public relay Actions secrets.
+        # It must target ONLY Ondo-Control/ondo-jarvis, Contents: Read/Write.
+        # Existing ONDO_JARVIS_READ_TOKEN retains read-only for checkout.
+        # Without the separate token this job fails CLOSED, with no upload.
         # No actions/upload-artifact, public Git commit, or release assets.
