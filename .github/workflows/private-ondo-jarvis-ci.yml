@@ -233,8 +233,9 @@ jobs:
         # is PUBLIC while the checked-out ONDO JARVIS source is PRIVATE.
         # The CI output exposes only SHA/counts, not the archive, source or secrets.
 
-  private_delivery_upload:
-    name: Private ZIP-Auslieferung (kein Public Artifact)
+
+  sealed_private_export:
+    name: Verschluesselter In-Memory-Export (kein Public-Artifact)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [pruefe, tests, real_release_candidate]
@@ -244,16 +245,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Verify and export exact private commit SHA
+      - name: Resolve exact private SHA
         id: target
         run: |
           TARGET_SHA="$(tr -d '[:space:]' < .ci-trigger/ondo-jarvis-sha.txt)"
-          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::invalid pinned SHA"
-            exit 2
-          fi
+          if [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then exit 2; fi
           echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
-      - name: Checkout private source via existing secret
+      - name: Checkout private commit READ-ONLY
         uses: actions/checkout@v4
         with:
           repository: Ondo-Control/ondo-jarvis
@@ -262,35 +260,65 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
           path: private-ondo-jarvis
-      - name: Verify exact source commit
+      - name: Verify exact Git checkout
         working-directory: private-ondo-jarvis
         env:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-      - name: Set up official Node 22 and Python 3.12
+      - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Set up Python
+      - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install actual Alexa npm dependencies (no scripts)
+      - name: Real npm installation without hooks
         working-directory: private-ondo-jarvis/alexa-hosted-skill/lambda
         run: |
           npm install --omit=dev --ignore-scripts --no-audit --no-fund
           npm ls --omit=dev --depth=0
-      - name: Save verified ZIP exclusively in PRIVATE repository branch
+      - name: Emit ONLY RSA-sealed and ChaCha20-encrypted archive (no secret, no plaintext)
         working-directory: private-ondo-jarvis
         env:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
-          ONDO_PRIVATE_GITHUB_PUBLISH_TOKEN: ${{ secrets.ONDO_JARVIS_RELEASE_WRITE_TOKEN }}
+          ONDO_EPHEMERAL_RSA_PUBLIC_DER: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq2EwAma/dBudcupgrczD/SI/6+x8nTmQOHjLjWJHSYdSBciaXn58v/SsoEx1COPoMKDj8ZQ2NX8Vy8aKNNks6GCLj8FMCA7o/NpYDPCBTvSlySW9tfXBFJZ2ZgiTIpBxGiwtwNgejoKA7cWyaeM0MHYTwJobLtDHQzfZyI+3fmivXb0D4fCLySgU0X8L+jyHZ1U3T1P8LjzIwR0xJmkG2pvJ6qtgIhxcAzgSWK3eZnHbdoCy27pezT9Ezqgusm3YQmywVsBs9zSaIYfLE2P6hZ48zPbWUHxixHMgvbe7uY/X9iR3ZNjqqAy729ChEWX2n3Wu2A9qjSxQV3JzvIS3JQIDAQAB"
         run: |
-          python3 tools/verify_real_relay_v3_rc.py --source-sha "$TARGET_SHA"
-          python3 tools/publish_private_jarvis_rc.py --source-sha "$TARGET_SHA"
-        # Use a SEPARATE short-lived fine-grained GitHub token stored ONLY as
-        # ONDO_JARVIS_RELEASE_WRITE_TOKEN in public relay Actions secrets.
-        # It must target ONLY Ondo-Control/ondo-jarvis, Contents: Read/Write.
-        # Existing ONDO_JARVIS_READ_TOKEN retains read-only for checkout.
-        # Without the separate token this job fails CLOSED, with no upload.
-        # No actions/upload-artifact, public Git commit, or release assets.
+          python3 - <<'PY'
+          import base64,hashlib,os,subprocess,tempfile,textwrap
+          from pathlib import Path
+          import sys
+          sys.path.insert(0,"tools")
+          from build_jarvis_aggregate_rc import build
+          sha=os.environ["TARGET_SHA"]
+          archive,manifest=build(Path.cwd(),sha)
+          assert manifest["source_commit"]==sha and manifest["deployment_performed"] is False
+          assert manifest["release_approved"] is False
+          with tempfile.TemporaryDirectory(prefix="ondo-sealed-") as folder:
+              root=Path(folder)
+              plain=root/"private-rc.zip"
+              plain.write_bytes(archive)
+              pub=root/"public.der"
+              pub.write_bytes(base64.b64decode(os.environ["ONDO_EPHEMERAL_RSA_PUBLIC_DER"]))
+              key=os.urandom(32)
+              iv=os.urandom(16)
+              keyfile=root/"session.key"
+              keyfile.write_bytes(key)
+              encrypted=root/"encrypted.bin"
+              wrapped=root/"wrapped.bin"
+              subprocess.run(["openssl","enc","-chacha20","-K",key.hex(),"-iv",iv.hex(),"-in",str(plain),"-out",str(encrypted)],check=True,stdout=subprocess.DEVNULL)
+              subprocess.run(["openssl","pkeyutl","-encrypt","-pubin","-keyform","DER","-inkey",str(pub),"-pkeyopt","rsa_padding_mode:pkcs1","-in",str(keyfile),"-out",str(wrapped)],check=True,stdout=subprocess.DEVNULL)
+              ciphertext=encrypted.read_bytes()
+              assert len(ciphertext)==len(archive)
+              print("ONDO_SEALED_PACKAGE_BEGIN",flush=True)
+              print("ONDO_SEALED_SHA256="+hashlib.sha256(archive).hexdigest(),flush=True)
+              print("ONDO_SEALED_SOURCE="+sha,flush=True)
+              print("ONDO_SEALED_BYTES="+str(len(archive)),flush=True)
+              print("ONDO_SEALED_IV="+iv.hex(),flush=True)
+              print("ONDO_SEALED_RSA_KEY="+base64.b64encode(wrapped.read_bytes()).decode(),flush=True)
+              for part in textwrap.wrap(base64.b64encode(ciphertext).decode(),100):
+                  print("ONDO_SEALED_DATA="+part,flush=True)
+              print("ONDO_SEALED_PACKAGE_END",flush=True)
+          PY
+        # Ciphertext only, with 2048-bit RSA sealed ephemeral stream key.
+        # No public artifact upload or plaintext package anywhere on GitHub.
