@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS Gespräch</title>
+  <!-- Von Amazon dokumentierter SDK-Endpunkt; Amazon bietet keine feste Version an. -->
+  <script src="https://cdn.html.games.alexa.a2z.com/alexa-html/latest/alexa-html.js"></script>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, sans-serif; }
+    body { margin: 0; background: #06111f; color: #f5f8ff; }
+    main { box-sizing: border-box; min-height: 100vh; padding: 44px; }
+    h1 { color: #69e2ff; font-size: 48px; margin: 0 0 10px; }
+    .rule { color: #c9d8ea; font-size: 21px; max-width: 900px; }
+    #status { font-size: 34px; margin: 26px 0 10px; }
+    #countdown { color: #ffd166; font-size: 40px; font-weight: bold; min-height: 54px; }
+    #round { color: #83f2ad; font-size: 20px; margin: 4px 0 14px; }
+    ol { background: #10243b; border-radius: 18px; font-size: 19px; line-height: 1.4;
+         max-height: 190px; overflow: hidden; padding: 18px 18px 18px 54px; }
+    .controls { display: grid; gap: 14px; }
+    button { background: #b4233c; border: 0; border-radius: 14px; color: white;
+             font-size: 24px; padding: 16px 28px; }
+    #resume { background: #16865f; font-size: 30px; font-weight: bold; padding: 22px 30px; width: 100%; }
+    #resume[disabled] { opacity: 0.55; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>JARVIS</h1>
+    <p class="rule">JARVIS hört im Hintergrund zu und antwortet, wenn du ihn ansprichst
+      („Jarvis, …“) oder gerade mit ihm sprichst. Nach einer längeren Pause tippe auf
+      „Weiterreden“.</p>
+    <p id="status">Initialisierung …</p>
+    <div id="countdown">–</div>
+    <p id="round"></p>
+    <ol id="events"></ol>
+    <div class="controls">
+      <button id="resume" type="button" hidden>Weiterreden</button>
+      <button id="finish" type="button">Unterhaltung beenden</button>
+    </div>
+  </main>
+  <script>
+    "use strict";
+
+    // Ruhige Langsitzung: Die Web-App öffnet das Mikrofon leise neu, ohne dass
+    // JARVIS etwas ansagt. Alexa liefert kein No-Input-Ereignis; deshalb wartet
+    // sie nach "Mikrofon zu" eine Karenzzeit auf Antwort, Sprachausgabe oder die
+    // Meldung "ignoriert" und fordert erst danach ein neues Hörfenster an.
+    const DEFAULT_WATCHDOG_SECONDS = 4;
+    const DEFAULT_GRACE_SECONDS = 12;
+    const DEFAULT_MAX_REOPENS = 200;
+    const HARD_MAX_REOPENS = 200;
+    const BOOTSTRAP_OBSERVATION_SECONDS = 12;
+    const FALLBACK_OPEN_WATCHDOG_SECONDS = 12;
+    const FALLBACK_REQUEST_TIMEOUT_SECONDS = 8;
+    const MAX_CONSECUTIVE_FAILURES = 3;
+
+    let alexaClient = null;
+    let sequence = 0;
+    let watchdogSeconds = DEFAULT_WATCHDOG_SECONDS;
+    let graceSeconds = DEFAULT_GRACE_SECONDS;
+    let maxReopens = DEFAULT_MAX_REOPENS;
+    let nativeWatchdogId = null;
+    let graceId = null;
+    let openWatchdogId = null;
+    let requestWatchdogId = null;
+    let bootstrapId = null;
+    let micOpen = false;
+    let waitingForOpen = false;
+    let stopped = false;
+    let phase = "BOOTSTRAP";
+    let requestEpoch = 0;
+    let finishSent = false;
+    let consecutiveFailures = 0;
+
+    const statusElement = document.getElementById("status");
+    const countdownElement = document.getElementById("countdown");
+    const eventsElement = document.getElementById("events");
+    const roundElement = document.getElementById("round");
+    const resumeElement = document.getElementById("resume");
+
+    function addEvent(label) {
+      const item = document.createElement("li");
+      item.textContent = `${new Date().toLocaleTimeString("de-DE")} — ${label}`;
+      eventsElement.prepend(item);
+      while (eventsElement.children.length > 5) {
+        eventsElement.removeChild(eventsElement.lastChild);
+      }
+    }
+
+    function setStatus(text) {
+      statusElement.textContent = text;
+      addEvent(text);
+    }
+
+    function clearTimer(id) {
+      if (id !== null) window.clearTimeout(id);
+      return null;
+    }
+
+    function clearTurnTimers() {
+      nativeWatchdogId = clearTimer(nativeWatchdogId);
+      graceId = clearTimer(graceId);
+      openWatchdogId = clearTimer(openWatchdogId);
+      requestWatchdogId = clearTimer(requestWatchdogId);
+      bootstrapId = clearTimer(bootstrapId);
+    }
+
+    function sendFinishOnce() {
+      if (finishSent || !alexaClient) return;
+      finishSent = true;
+      try { alexaClient.skill.sendMessage({action: "finish"}); }
+      catch (_error) { addEvent("Beenden-Nachricht konnte nicht gesendet werden"); }
+    }
+
+    function finishVisible(reason, notifyBackend = true) {
+      if (stopped) {
+        if (notifyBackend) sendFinishOnce();
+        return;
+      }
+      stopped = true;
+      phase = "STOPPED";
+      micOpen = false;
+      waitingForOpen = false;
+      requestEpoch += 1;
+      clearTurnTimers();
+      resumeElement.hidden = true;
+      countdownElement.textContent = "Fertig";
+      setStatus(reason);
+      if (notifyBackend) sendFinishOnce();
+    }
+
+    function enterPausedState(reason = "Gespräch pausiert") {
+      if (stopped) return;
+      phase = "PAUSED";
+      micOpen = false;
+      waitingForOpen = false;
+      requestEpoch += 1;
+      clearTurnTimers();
+      resumeElement.disabled = false;
+      resumeElement.hidden = false;
+      countdownElement.textContent = "Pausiert";
+      setStatus(reason);
+    }
+
+    function noteFailure(reason) {
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        enterPausedState("Hörfenster nicht verfügbar — tippe auf Weiterreden");
+        return true;
+      }
+      addEvent(reason);
+      return false;
+    }
+
+    function armBootstrapObservation() {
+      bootstrapId = clearTimer(bootstrapId);
+      if (stopped || micOpen) return;
+      phase = "BOOTSTRAP";
+      countdownElement.textContent = "Bereit";
+      setStatus("Erstes Hörfenster wird erwartet");
+      bootstrapId = window.setTimeout(() => {
+        bootstrapId = null;
+        if (!stopped && phase === "BOOTSTRAP" && !micOpen) {
+          // Kein Abbruch: das Gespräch bleibt per Tippen fortsetzbar.
+          enterPausedState("Kein Hörfenster erkannt — tippe auf Weiterreden");
+        }
+      }, BOOTSTRAP_OBSERVATION_SECONDS * 1000);
+    }
+
+    function armGrace() {
+      graceId = clearTimer(graceId);
+      if (stopped) return;
+      phase = "AWAITING_TURN_RESULT";
+      graceId = window.setTimeout(() => {
+        graceId = null;
+        if (!stopped && phase === "AWAITING_TURN_RESULT" && !micOpen) {
+          requestListeningTurn(false);
+        }
+      }, graceSeconds * 1000);
+    }
+
+    function armNativeOpenWatchdog(reason) {
+      nativeWatchdogId = clearTimer(nativeWatchdogId);
+      if (stopped || micOpen || waitingForOpen || phase === "PAUSED") return;
+      phase = "AWAITING_NATIVE_OPEN";
+      nativeWatchdogId = window.setTimeout(() => {
+        nativeWatchdogId = null;
+        if (!stopped && !micOpen && !waitingForOpen && phase === "AWAITING_NATIVE_OPEN") {
+          addEvent(`Leises Neuöffnen nach ${reason}`);
+          requestListeningTurn(false);
+        }
+      }, watchdogSeconds * 1000);
+    }
+
+    function requestListeningTurn(isResume) {
+      nativeWatchdogId = clearTimer(nativeWatchdogId);
+      graceId = clearTimer(graceId);
+      if (stopped || waitingForOpen) return;
+      if (micOpen) {
+        phase = "LISTENING";
+        resumeElement.hidden = true;
+        countdownElement.textContent = "Ich höre zu";
+        return;
+      }
+      if (sequence >= maxReopens) {
+        enterPausedState("Sitzungsende erreicht — tippe auf Weiterreden");
+        return;
+      }
+      sequence += 1;
+      waitingForOpen = true;
+      phase = "AWAITING_FALLBACK_OPEN";
+      const epoch = ++requestEpoch;
+      roundElement.textContent = `Leise Neuöffnungen: ${sequence}`;
+      countdownElement.textContent = isResume ? "Weiterreden" : "Ich höre zu";
+      requestWatchdogId = clearTimer(requestWatchdogId);
+      requestWatchdogId = window.setTimeout(() => {
+        requestWatchdogId = null;
+        if (epoch === requestEpoch && !stopped && waitingForOpen && !micOpen) {
+          waitingForOpen = false;
+          requestEpoch += 1;
+          if (isResume) enterPausedState("Hörfenster konnte nicht geöffnet werden — tippe erneut");
+          else if (!noteFailure("Anfrage ohne Antwort")) armNativeOpenWatchdog("Anfrage-Watchdog");
+        }
+      }, FALLBACK_REQUEST_TIMEOUT_SECONDS * 1000);
+      const message = isResume
+        ? {action: "continue_listening", sequence, resume: true}
+        : {action: "continue_listening", sequence};
+      try {
+        alexaClient.skill.sendMessage(message, (response) => {
+          if (epoch !== requestEpoch || stopped || micOpen || !waitingForOpen) return;
+          requestWatchdogId = clearTimer(requestWatchdogId);
+          const statusCode = response && Number.isInteger(response.statusCode)
+            ? response.statusCode
+            : 0;
+          if (statusCode < 200 || statusCode >= 300) {
+            waitingForOpen = false;
+            if (isResume) enterPausedState(`Weiterreden abgelehnt — Status ${statusCode}`);
+            else enterPausedState(`Hörfenster abgelehnt — Status ${statusCode}`);
+            return;
+          }
+          openWatchdogId = clearTimer(openWatchdogId);
+          openWatchdogId = window.setTimeout(() => {
+            openWatchdogId = null;
+            if (epoch === requestEpoch && !stopped && waitingForOpen && !micOpen) {
+              waitingForOpen = false;
+              requestEpoch += 1;
+              if (isResume) enterPausedState("Hörfenster blieb geschlossen — tippe erneut");
+              else if (!noteFailure("Hörfenster blieb geschlossen")) armNativeOpenWatchdog("Öffnungs-Watchdog");
+            }
+          }, FALLBACK_OPEN_WATCHDOG_SECONDS * 1000);
+        });
+      } catch (_error) {
+        waitingForOpen = false;
+        enterPausedState("Hörfenster konnte nicht angefordert werden — tippe erneut");
+      }
+    }
+
+    function requestResumeListening() {
+      if (stopped || phase !== "PAUSED" || waitingForOpen) return;
+      resumeElement.disabled = true;
+      resumeElement.hidden = true;
+      consecutiveFailures = 0;
+      requestListeningTurn(true);
+    }
+
+    document.getElementById("finish").addEventListener("click", () => {
+      finishVisible("Unterhaltung wird beendet");
+    });
+    resumeElement.addEventListener("click", requestResumeListening);
+
+    Alexa.create({version: "1.1"})
+      .then(({alexa, message}) => {
+        alexaClient = alexa;
+        const config = message && message.conversation ? message.conversation : {};
+        if (Number.isInteger(config.watchdogSeconds) &&
+            config.watchdogSeconds >= 2 && config.watchdogSeconds <= 6) {
+          watchdogSeconds = config.watchdogSeconds;
+        }
+        if (Number.isInteger(config.graceSeconds) &&
+            config.graceSeconds >= 6 && config.graceSeconds <= 20) {
+          graceSeconds = config.graceSeconds;
+        }
+        if (Number.isInteger(config.maxReopens) &&
+            config.maxReopens >= 1 && config.maxReopens <= HARD_MAX_REOPENS) {
+          maxReopens = config.maxReopens;
+        }
+
+        alexaClient.voice.onMicrophoneOpened(() => {
+          if (stopped) return;
+          clearTurnTimers();
+          requestEpoch += 1;
+          micOpen = true;
+          waitingForOpen = false;
+          consecutiveFailures = 0;
+          resumeElement.hidden = true;
+          resumeElement.disabled = false;
+          phase = "LISTENING";
+          countdownElement.textContent = "Ich höre zu";
+          statusElement.textContent = "Hörfenster offen";
+        });
+        alexaClient.voice.onMicrophoneClosed(() => {
+          if (stopped) return;
+          micOpen = false;
+          if (phase === "AWAITING_NATIVE_OPEN" ||
+              phase === "AWAITING_FALLBACK_OPEN" || waitingForOpen) {
+            return;
+          }
+          if (phase === "SPEAKING") return;
+          bootstrapId = clearTimer(bootstrapId);
+          nativeWatchdogId = clearTimer(nativeWatchdogId);
+          openWatchdogId = clearTimer(openWatchdogId);
+          requestEpoch += 1;
+          waitingForOpen = false;
+          countdownElement.textContent = "–";
+          statusElement.textContent = "Ich warte";
+          armGrace();
+        });
+        alexaClient.speech.onStarted(() => {
+          if (stopped) return;
+          // Die Begrüßung beim Start darf den Bootstrap nicht umlenken.
+          if (phase === "BOOTSTRAP") return;
+          bootstrapId = clearTimer(bootstrapId);
+          graceId = clearTimer(graceId);
+          nativeWatchdogId = clearTimer(nativeWatchdogId);
+          if (!waitingForOpen) phase = "SPEAKING";
+          countdownElement.textContent = "Antwort";
+          setStatus("JARVIS spricht");
+        });
+        alexaClient.speech.onStopped(() => {
+          if (stopped) return;
+          if (phase === "BOOTSTRAP") return;
+          if (waitingForOpen) return;
+          if (micOpen) {
+            phase = "LISTENING";
+            return;
+          }
+          if (phase !== "SPEAKING") return;
+          armNativeOpenWatchdog("beendeter Antwort");
+        });
+        alexaClient.skill.onMessage((incoming) => {
+          if (stopped || !incoming || typeof incoming !== "object") return;
+          if (incoming.action === "listening" && Number.isInteger(incoming.sequence)) {
+            addEvent(`Hörfenster ${incoming.sequence} bestätigt`);
+          } else if (incoming.action === "answer") {
+            graceId = clearTimer(graceId);
+            if (phase === "AWAITING_TURN_RESULT") phase = "PROCESSING";
+            resumeElement.hidden = true;
+            setStatus("Antwort wird ausgegeben");
+          } else if (incoming.action === "ignored") {
+            // Nicht angesprochen oder nicht verstanden: leise weiter, Alexa öffnet selbst.
+            graceId = clearTimer(graceId);
+            if (!micOpen && !waitingForOpen) armNativeOpenWatchdog("ignorierter Äußerung");
+            countdownElement.textContent = "Ich höre zu";
+            statusElement.textContent = "Nicht angesprochen — ich warte";
+          }
+        });
+        // Die Launch-Antwort öffnet das erste Hörfenster nativ; der Bootstrap
+        // beobachtet das nur und pausiert (statt zu beenden), wenn es ausbleibt.
+        armBootstrapObservation();
+      })
+      .catch(() => finishVisible("JARVIS-Web-App konnte nicht initialisiert werden", false));
+  </script>
+</body>
+</html>
