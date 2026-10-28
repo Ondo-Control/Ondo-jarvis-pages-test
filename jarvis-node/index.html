@@ -33,6 +33,7 @@
     <p id="status">Initialisierung …</p>
     <div id="countdown">–</div>
     <p id="round"></p>
+    <ol id="chat" aria-label="Gespräch"></ol>
     <ol id="events"></ol>
     <div class="controls">
       <button id="resume" type="button" hidden>Weiterreden</button>
@@ -78,6 +79,15 @@
     const eventsElement = document.getElementById("events");
     const roundElement = document.getElementById("round");
     const resumeElement = document.getElementById("resume");
+
+    const chatElement = document.getElementById("chat");
+    function addChat(who, text) {
+      if (typeof text !== "string" || !text) return;
+      const item = document.createElement("li");
+      item.textContent = `${who}: ${text.slice(0, 220)}`;
+      chatElement.appendChild(item);
+      while (chatElement.children.length > 6) chatElement.removeChild(chatElement.firstChild);
+    }
 
     function addEvent(label) {
       const item = document.createElement("li");
@@ -343,6 +353,8 @@
           if (incoming.action === "listening" && Number.isInteger(incoming.sequence)) {
             addEvent(`Hörfenster ${incoming.sequence} bestätigt`);
           } else if (incoming.action === "answer") {
+            addChat("Du", incoming.heard);
+            addChat("Jarvis", incoming.said);
             graceId = clearTimer(graceId);
             if (phase === "AWAITING_TURN_RESULT") phase = "PROCESSING";
             resumeElement.hidden = true;
