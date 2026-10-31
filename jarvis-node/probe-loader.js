@@ -8,7 +8,13 @@
     if (done === q.run) return;
     try { localStorage.setItem("probe_done", q.run); } catch (e) {}
     const url = "../jarvis-probe/index.html?env=" + (q.mode === "top" ? "top" : "skill") + "&run=" + q.run;
-    if (q.mode === "top") { location.replace(url); return; }  // Messung ohne Iframe: Seite ersetzt die Gesprächsseite
+    if (q.mode === "top") {  // Messung ohne Iframe: Sondenseite ersetzt das Dokument (location.replace wird von der Hülle offenbar nicht ausgeführt)
+      fetch(url.split("?")[0], {cache: "no-store"}).then((r) => r.text()).then((h) => {
+        history.replaceState(null, "", "?" + url.split("?")[1]);
+        document.open(); document.write(h); document.close();
+      }).catch(() => {});
+      return;
+    }
     const f = document.createElement("iframe");
     f.allow = "microphone; camera; geolocation; autoplay; fullscreen";
     f.style.cssText = "position:fixed;inset:0;width:100%;height:100%;border:0;background:#06111f;z-index:9";
