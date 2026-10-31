@@ -231,7 +231,7 @@ async function sendReport() {
   } catch (e) { el("state").textContent += " Senden fehlgeschlagen (Netz)."; }
 }
 el("again").onclick = runAll;
-el("mic").onclick = async () => { await micTest(); await speechTest(); el("state").textContent = "Mikro/Kamera-Test per Tippen fertig."; };
+el("mic").onclick = async () => { await micTest(); await speechTest(); el("state").textContent = "Mikro/Kamera-Test per Tippen fertig."; await sendReport(); };
 window.__probeResult = R;
 runAll();
 </script>
