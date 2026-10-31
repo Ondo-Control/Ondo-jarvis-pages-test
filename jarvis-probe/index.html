@@ -185,6 +185,20 @@ async function webTests() {
     f.allow = "autoplay; encrypted-media"; f.onload = () => fin("info", "load-Ereignis (auch bei Fehlerseite möglich, Bild bitte selbst prüfen)"); f.onerror = () => fin("no", "iframe Fehler");
     f.src = "https://www.youtube.com/embed/aqz-KE-bpKQ?mute=1"; document.body.appendChild(f); setTimeout(() => fin("no", "kein Laden in 8 s"), 8000);
   });
+  // YouTube-IFrame-API: Spielt ein stummes Video wirklich ab? (Zustände und Fehlercode werden gemeldet)
+  await new Promise((res) => {
+    const log = []; let done = false, p = null;
+    const fin = (st, v) => { if (!done) { done = true; put("youtubeApi", st, v + " | " + log.join(",")); try { p && p.destroy(); } catch (e) {} const d = document.getElementById("ytp"); d && d.remove(); res(); } };
+    const holder = document.createElement("div"); holder.id = "ytp"; holder.style.cssText = "position:fixed;right:0;bottom:0;width:320px;height:180px;z-index:5"; document.body.appendChild(holder);
+    const sc = document.createElement("script"); sc.src = "https://www.youtube.com/iframe_api"; sc.onerror = () => fin("no", "Skript nicht ladbar");
+    window.onYouTubeIframeAPIReady = () => {
+      p = new YT.Player("ytp", { width: 320, height: 180, videoId: "aqz-KE-bpKQ", playerVars: { autoplay: 1, mute: 1, playsinline: 1 }, events: {
+        onReady: () => { log.push("ready"); try { p.mute(); p.playVideo(); } catch (e) {} },
+        onStateChange: (e) => { log.push("state" + e.data); if (e.data === 1) setTimeout(() => { let t = 0; try { t = p.getCurrentTime(); } catch (x) {} fin(t > 0.5 ? "ok" : "info", "spielt, Zeit " + t.toFixed(1) + " s"); }, 3500); },
+        onError: (e) => fin("no", "Fehlercode " + e.data) } });
+    };
+    document.head.appendChild(sc); setTimeout(() => fin("no", "kein Abspielen in 20 s"), 20000);
+  });
   try { const w = window.open("about:blank", "_blank"); w ? (ok("window.open", "möglich"), w.close()) : no("window.open", "blockiert"); } catch (e) { no("window.open", errText(e)); }
 }
 
