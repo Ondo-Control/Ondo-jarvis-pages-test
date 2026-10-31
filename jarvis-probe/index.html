@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS Sonde 1</title>
+  <script src="https://cdn.html.games.alexa.a2z.com/alexa-html/latest/alexa-html.js" onerror="window.__alexaSdkFailed=true"></script>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, sans-serif; }
+    body { margin: 0; background: #06111f; color: #f5f8ff; }
+    main { padding: 20px 28px; }
+    h1 { color: #69e2ff; font-size: 34px; margin: 0 0 4px; }
+    #state { color: #ffd166; font-size: 22px; margin-bottom: 10px; }
+    #tabs button, .act { background: #16865f; border: 0; border-radius: 12px; color: #fff; font-size: 20px; padding: 12px 20px; margin: 0 8px 8px 0; }
+    #report { background: #10243b; border-radius: 14px; font: 15px/1.35 monospace; padding: 12px 16px; white-space: pre-wrap; word-break: break-word; }
+    .ok { color: #83f2ad; } .no { color: #ff8a8a; } .mid { color: #ffd166; }
+    iframe, video { width: 1px; height: 1px; border: 0; position: absolute; left: -9px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>JARVIS Sonde 1</h1>
+  <div id="state">Starte …</div>
+  <div id="tabs">
+    <button class="act" id="again" type="button">Alles erneut testen</button>
+    <button class="act" id="mic" type="button">Mikrofon/Kamera per Tippen testen</button>
+    <button class="act" id="page2" type="button">Nächste Seite</button>
+  </div>
+  <div id="report"></div>
+</main>
+<script>
+"use strict";
+const R = {};            // key -> {s: "ok"|"no"|"info", v: string}
+const ORDER = [];
+const el = (id) => document.getElementById(id);
+function put(key, s, v) { if (!(key in R)) ORDER.push(key); R[key] = { s, v: String(v).slice(0, 160) }; render(); }
+const ok = (k, v = "ja") => put(k, "ok", v);
+const no = (k, v = "nein") => put(k, "no", v);
+const info = (k, v) => put(k, "info", v);
+const errText = (e) => (e && (e.name || "Fehler") + (e.message ? ": " + e.message : "")) || String(e);
+function withTimeout(promise, ms, label) {
+  return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error(label + " Zeitüberschreitung " + ms + " ms")), ms))]);
+}
+async function step(name, fn) { try { await fn(); } catch (e) { put(name, "no", "Fehler " + errText(e)); } }
+
+let page = 0;
+function render() {
+  const rows = ORDER.map((k) => {
+    const o = R[k]; const c = o.s === "ok" ? "ok" : o.s === "no" ? "no" : "mid";
+    return `<span class="${c}">${o.s === "ok" ? "✔" : o.s === "no" ? "✘" : "•"}</span> ${k}: ${o.v.replace(/</g, "&lt;")}`;
+  });
+  const per = 22; const pages = Math.max(1, Math.ceil(rows.length / per));
+  page = page % pages;
+  el("report").innerHTML = rows.slice(page * per, page * per + per).join("\n") + `\n\nSeite ${page + 1}/${pages} — ${rows.length} Messpunkte`;
+}
+el("page2").onclick = () => { page++; render(); };
+
+// ---------------------------------------------------------------- Hardware / System
+async function systemInfo() {
+  info("ua", navigator.userAgent);
+  try { const d = navigator.userAgentData; if (d) { const h = await d.getHighEntropyValues(["model", "platformVersion", "architecture", "bitness", "uaFullVersion"]); info("uaData", JSON.stringify({ brands: d.brands.map((b) => b.brand + b.version), mobile: d.mobile, ...h })); } else no("uaData", "nicht vorhanden"); } catch (e) { no("uaData", errText(e)); }
+  info("platform", navigator.platform + " | vendor " + navigator.vendor);
+  info("cpuThreads", navigator.hardwareConcurrency);
+  info("deviceMemoryGiB", navigator.deviceMemory);
+  info("screen", `${screen.width}x${screen.height} avail ${screen.availWidth}x${screen.availHeight} depth ${screen.colorDepth} dpr ${devicePixelRatio} orient ${screen.orientation ? screen.orientation.type : "?"}`);
+  info("viewport", `${innerWidth}x${innerHeight} outer ${outerWidth}x${outerHeight}`);
+  info("touch", `maxTouchPoints ${navigator.maxTouchPoints}, ontouchstart ${"ontouchstart" in window}`);
+  info("sprache/zeit", `${navigator.language} [${(navigator.languages || []).join(",")}] ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+  info("online", navigator.onLine);
+  try { const c = navigator.connection; c ? info("netzwerk", `${c.effectiveType} down ${c.downlink} rtt ${c.rtt} saveData ${c.saveData}`) : no("netzwerk", "keine Connection-API"); } catch (e) { no("netzwerk", errText(e)); }
+  try { if (navigator.getBattery) { const b = await withTimeout(navigator.getBattery(), 2000, "Batterie"); info("batterie", `${Math.round(b.level * 100)}% laden ${b.charging}`); } else no("batterie", "nicht vorhanden"); } catch (e) { no("batterie", errText(e)); }
+  try { const e = await navigator.storage.estimate(); info("speicherQuota", `${Math.round(e.quota / 1048576)} MiB, belegt ${Math.round(e.usage / 1048576)} MiB`); } catch (e) { no("speicherQuota", errText(e)); }
+  try { performance.memory ? info("jsHeap", `${Math.round(performance.memory.usedJSHeapSize / 1048576)}/${Math.round(performance.memory.jsHeapSizeLimit / 1048576)} MiB`) : info("jsHeap", "nicht vorhanden"); } catch (e) { no("jsHeap", errText(e)); }
+  try { const c = document.createElement("canvas"); const gl = c.getContext("webgl2") || c.getContext("webgl"); if (!gl) no("webgl", "kein WebGL"); else { const x = gl.getExtension("WEBGL_debug_renderer_info"); info("webgl", (c.getContext("webgl2") ? "v2 " : "v1 ") + (x ? gl.getParameter(x.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) + " maxTex " + gl.getParameter(gl.MAX_TEXTURE_SIZE)); } } catch (e) { no("webgl", errText(e)); }
+  info("laufzeit", ["WebAssembly", "SharedArrayBuffer", "BigInt", "OffscreenCanvas", "Worker", "SharedWorker", "ServiceWorker" in navigator ? "ServiceWorker" : "-", "ResizeObserver", "IntersectionObserver"].map((n) => n + ":" + (n === "-" ? "n" : (typeof window[n] !== "undefined" ? "j" : "n"))).join(" "));
+}
+
+// ---------------------------------------------------------------- Speicher
+async function storageTests() {
+  for (const n of ["localStorage", "sessionStorage"]) { try { window[n].setItem("p", "1"); window[n].removeItem("p"); ok(n); } catch (e) { no(n, errText(e)); } }
+  try { const db = await withTimeout(new Promise((res, rej) => { const r = indexedDB.open("probe", 1); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }), 3000, "indexedDB"); db.close(); indexedDB.deleteDatabase("probe"); ok("indexedDB"); } catch (e) { no("indexedDB", errText(e)); }
+  try { await caches.open("probe"); await caches.delete("probe"); ok("cacheStorage"); } catch (e) { no("cacheStorage", errText(e)); }
+  info("cookies", navigator.cookieEnabled);
+}
+
+// ---------------------------------------------------------------- Medien
+function mediaTests() {
+  const v = document.createElement("video"); const a = document.createElement("audio");
+  const vt = ["video/mp4; codecs=\"avc1.42E01E\"", "video/mp4; codecs=\"hev1.1.6.L93.B0\"", "video/webm; codecs=\"vp8\"", "video/webm; codecs=\"vp9\"", "video/mp4; codecs=\"av01.0.05M.08\"", "application/vnd.apple.mpegurl"];
+  info("videoFormate", vt.map((t) => t.replace(/video\/|application\/vnd.apple.|codecs=|[";]/g, "").trim() + ":" + (v.canPlayType(t) || "-")).join(" | "));
+  const at = ["audio/mpeg", "audio/mp4; codecs=\"mp4a.40.2\"", "audio/ogg; codecs=\"opus\"", "audio/webm; codecs=\"opus\"", "audio/wav", "audio/flac"];
+  info("audioFormate", at.map((t) => t.replace(/audio\/|codecs=|[";]/g, "").trim() + ":" + (a.canPlayType(t) || "-")).join(" | "));
+  try { info("mediaSource", typeof MediaSource !== "undefined" ? "ja avc " + MediaSource.isTypeSupported("video/mp4; codecs=\"avc1.42E01E,mp4a.40.2\"") : "nein"); } catch (e) { no("mediaSource", errText(e)); }
+  try { info("mediaRecorder", typeof MediaRecorder !== "undefined" ? ["audio/webm", "audio/webm;codecs=opus", "audio/mp4", "video/webm"].map((t) => t + ":" + MediaRecorder.isTypeSupported(t)).join(" ") : "nein"); } catch (e) { no("mediaRecorder", errText(e)); }
+  try { const ac = new (window.AudioContext || window.webkitAudioContext)(); info("audioContext", `${ac.state} ${ac.sampleRate} Hz latenz ${ac.baseLatency} kanäle ${ac.destination.maxChannelCount}`); ac.close(); } catch (e) { no("audioContext", errText(e)); }
+  info("webrtc", typeof RTCPeerConnection !== "undefined" ? "ja" : "nein");
+  info("pictureInPicture/fullscreen", `${!!document.pictureInPictureEnabled} / ${!!document.fullscreenEnabled}`);
+}
+async function playbackTests() {
+  // stilles Audio per WebAudio (ohne Geste) und Video-Autoplay
+  try { const ac = new (window.AudioContext || window.webkitAudioContext)(); await withTimeout(ac.resume(), 1500, "AudioContext"); const o = ac.createOscillator(); const g = ac.createGain(); g.gain.value = 0; o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.05); info("audioContextOhneGeste", ac.state); ac.close(); } catch (e) { no("audioContextOhneGeste", errText(e)); }
+  try {
+    const v = document.createElement("video"); v.muted = true; v.playsInline = true; document.body.appendChild(v);
+    v.src = "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAAhtZGF0"; // leeres, ungültiges Beispiel
+    const p = v.play(); if (p) await withTimeout(p.catch((e) => { throw e; }), 1500, "video.play").then(() => info("videoAutoplayStumm", "erlaubt"), (e) => info("videoAutoplayStumm", "Hinweis " + errText(e)));
+    v.remove();
+  } catch (e) { info("videoAutoplayStumm", errText(e)); }
+}
+
+// ---------------------------------------------------------------- Berechtigungen & Geräte
+async function permissionTests() {
+  if (!navigator.permissions) { no("permissions", "Permissions-API fehlt"); return; }
+  for (const n of ["microphone", "camera", "geolocation", "notifications", "persistent-storage", "clipboard-read", "clipboard-write", "midi", "background-sync", "screen-wake-lock", "accelerometer", "gyroscope", "magnetometer", "speaker-selection", "display-capture"]) {
+    try { const s = await withTimeout(navigator.permissions.query({ name: n }), 1500, n); info("recht:" + n, s.state); } catch (e) { info("recht:" + n, "nicht abfragbar (" + (e.name || "?") + ")"); }
+  }
+}
+async function deviceTests() {
+  const md = navigator.mediaDevices;
+  if (!md) { no("mediaDevices", "fehlt (kein sicherer Kontext oder gesperrt)"); return; }
+  ok("mediaDevices");
+  try { const c = md.getSupportedConstraints(); info("constraints", Object.keys(c).filter((k) => c[k]).join(",")); } catch (e) { no("constraints", errText(e)); }
+  try { const list = await withTimeout(md.enumerateDevices(), 3000, "enumerateDevices"); const n = (k) => list.filter((d) => d.kind === k).length; info("geräte", `audioin ${n("audioinput")} videoin ${n("videoinput")} audioout ${n("audiooutput")}`); list.forEach((d, i) => info("gerät" + i, `${d.kind} "${d.label || "(ohne Name)"}"`)); } catch (e) { no("geräte", errText(e)); }
+}
+
+// ---------------------------------------------------------------- Aktive Tests
+async function micTest() {
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) { no("getUserMedia", "API fehlt"); return; }
+  for (const [name, c] of [["mikrofon", { audio: true }], ["kamera", { video: true }]]) {
+    try {
+      const st = await withTimeout(navigator.mediaDevices.getUserMedia(c), 8000, name);
+      const tr = st.getTracks().map((t) => `${t.kind}:${t.label || "?"}:${t.readyState}`).join(",");
+      ok("getUserMedia " + name, "ERLAUBT " + tr);
+      if (name === "mikrofon") { try { const ac = new (window.AudioContext || window.webkitAudioContext)(); const an = ac.createAnalyser(); ac.createMediaStreamSource(st).connect(an); await new Promise((r) => setTimeout(r, 700)); const b = new Uint8Array(an.fftSize); an.getByteTimeDomainData(b); const peak = Math.max(...b.map((x) => Math.abs(x - 128))); info("mikrofonPegel", "Spitze " + peak + "/128"); ac.close(); } catch (e) { info("mikrofonPegel", errText(e)); } }
+      st.getTracks().forEach((t) => t.stop());
+    } catch (e) { no("getUserMedia " + name, errText(e)); }
+  }
+}
+function speechTest() {
+  return new Promise((resolve) => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { no("spracherkennung", "keine SpeechRecognition-Klasse"); return resolve(); }
+    let done = false; const fin = () => { if (!done) { done = true; resolve(); } };
+    try {
+      const r = new SR(); r.lang = "de-DE"; r.interimResults = true; r.continuous = false;
+      r.onstart = () => info("spracherkennung", "gestartet (sprich jetzt einen Satz)");
+      r.onresult = (ev) => ok("spracherkennung", "ERKANNT: " + ev.results[0][0].transcript);
+      r.onerror = (ev) => no("spracherkennung", "Fehler " + ev.error + (ev.message ? " " + ev.message : ""));
+      r.onend = () => { if (R.spracherkennung && R.spracherkennung.s === "info") info("spracherkennung", "beendet ohne Ergebnis"); fin(); };
+      r.start(); setTimeout(() => { try { r.stop(); } catch (e) {} if (!R.spracherkennung) no("spracherkennung", "keine Rückmeldung in 9 s (start ohne Ereignis)"); fin(); }, 9000);
+    } catch (e) { no("spracherkennung", errText(e)); fin(); }
+  });
+}
+async function ttsTest() {
+  try { if (!window.speechSynthesis) { no("sprachausgabe", "fehlt"); return; } const v = speechSynthesis.getVoices(); info("sprachausgabe", `${v.length} Stimmen: ` + v.slice(0, 6).map((x) => x.name + "(" + x.lang + ")").join(", ")); } catch (e) { no("sprachausgabe", errText(e)); }
+}
+async function alexaTests() {
+  if (window.__alexaSdkFailed || typeof Alexa === "undefined") { info("alexaSDK", "nicht geladen (normaler Browser?)"); return; }
+  try {
+    const client = await withTimeout(Alexa.create({ version: "1.1" }), 4000, "Alexa.create");
+    ok("alexaSDK", "Client erstellt");
+    const out = [];
+    for (const k of ["voice", "speech", "audio", "skill", "performance", "utils"]) out.push(k + ":" + (client[k] ? Object.keys(client[k]).slice(0, 8).join("/") : "-"));
+    info("alexaClient", out.join(" "));
+    if (client.voice && client.voice.requestMicrophoneOpen) {
+      try { const res = await withTimeout(new Promise((resolve, reject) => { client.voice.onMicrophoneOpened(() => resolve("geöffnet")); client.voice.requestMicrophoneOpen({ onError: (e) => reject(new Error(JSON.stringify(e))) }); }), 6000, "requestMicrophoneOpen"); ok("alexaMikrofonÖffnen", res); } catch (e) { no("alexaMikrofonÖffnen", errText(e)); }
+    }
+  } catch (e) { no("alexaSDK", errText(e)); }
+}
+function sensorTests() {
+  for (const [n, cls] of [["Accelerometer", "Accelerometer"], ["Gyroscope", "Gyroscope"], ["Orientation", "AbsoluteOrientationSensor"], ["AmbientLight", "AmbientLightSensor"]]) info("sensor:" + n, typeof window[cls] !== "undefined" ? "API vorhanden" : "API fehlt");
+  for (const n of ["bluetooth", "usb", "serial", "hid", "nfc", "share", "credentials", "wakeLock", "vibrate", "geolocation", "clipboard", "mediaSession", "xr", "gpu"]) info("api:" + n, n in navigator ? "vorhanden" : "fehlt");
+}
+async function geoTest() {
+  if (!navigator.geolocation) { no("standort", "fehlt"); return; }
+  await new Promise((res) => navigator.geolocation.getCurrentPosition(() => { ok("standort", "erlaubt"); res(); }, (e) => { no("standort", "Fehler Code " + e.code + " " + e.message); res(); }, { timeout: 4000 }));
+}
+async function webTests() {
+  // YouTube als Einbettung (sichtbar nur kurz) und Netzwerk-Erreichbarkeit
+  for (const [n, u] of [["youtube", "https://www.youtube.com/generate_204"], ["googlevideo", "https://www.gstatic.com/generate_204"], ["github", "https://ondo-control.github.io/"], ["amazon", "https://www.amazon.de/robots.txt"]]) {
+    try { const t = performance.now(); await withTimeout(fetch(u, { mode: "no-cors", cache: "no-store" }), 5000, n); info("netz:" + n, "erreichbar " + Math.round(performance.now() - t) + " ms"); } catch (e) { no("netz:" + n, errText(e)); }
+  }
+  await new Promise((res) => {
+    const f = document.createElement("iframe"); let settled = false;
+    const fin = (s, v) => { if (!settled) { settled = true; put("youtubeEinbettung", s, v); f.remove(); res(); } };
+    f.allow = "autoplay; encrypted-media"; f.onload = () => fin("info", "load-Ereignis (auch bei Fehlerseite möglich, Bild bitte selbst prüfen)"); f.onerror = () => fin("no", "iframe Fehler");
+    f.src = "https://www.youtube.com/embed/aqz-KE-bpKQ?mute=1"; document.body.appendChild(f); setTimeout(() => fin("no", "kein Laden in 8 s"), 8000);
+  });
+  try { const w = window.open("about:blank", "_blank"); w ? (ok("window.open", "möglich"), w.close()) : no("window.open", "blockiert"); } catch (e) { no("window.open", errText(e)); }
+}
+
+async function runAll() {
+  ORDER.length = 0; Object.keys(R).forEach((k) => delete R[k]);
+  el("state").textContent = "Test läuft …";
+  info("probeVersion", "Sonde 1 · " + new Date().toISOString());
+  info("kontext", `${location.protocol}//${location.host} sicher:${window.isSecureContext} iframe:${window.top !== window}`);
+  await step("system", systemInfo); await step("speicher", storageTests); await step("medien", async () => { mediaTests(); await playbackTests(); });
+  await step("berechtigungen", permissionTests); await step("geräte", deviceTests); await step("sensoren", async () => sensorTests());
+  await step("sprachausgabe", ttsTest); await step("alexa", alexaTests); await step("standort", geoTest); await step("web", webTests);
+  await step("mikro/kamera", micTest);
+  el("state").textContent = "Fertig. Sprich jetzt, falls die Spracherkennung läuft …";
+  await step("spracherkennung", speechTest);
+  const bad = ORDER.filter((k) => R[k].s === "no").length;
+  el("state").textContent = `Fertig: ${ORDER.length} Messpunkte, ${bad} fehlgeschlagen. Mit „Nächste Seite“ blättern.`;
+  try { if (navigator.clipboard) navigator.clipboard.writeText(JSON.stringify(R)).catch(() => {}); } catch (e) {}
+}
+el("again").onclick = runAll;
+el("mic").onclick = async () => { await micTest(); await speechTest(); el("state").textContent = "Mikro/Kamera-Test per Tippen fertig."; };
+window.__probeResult = R;
+runAll();
+</script>
+</body>
+</html>
