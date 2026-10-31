@@ -126,13 +126,14 @@ async function deviceTests() {
 async function micTest() {
   if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) { no("getUserMedia", "API fehlt"); return; }
   for (const [name, c] of [["mikrofon", { audio: true }], ["kamera", { video: true }]]) {
+    const t0 = performance.now();
     try {
-      const st = await withTimeout(navigator.mediaDevices.getUserMedia(c), 8000, name);
+      const st = await withTimeout(navigator.mediaDevices.getUserMedia(c), 45000, name);
       const tr = st.getTracks().map((t) => `${t.kind}:${t.label || "?"}:${t.readyState}`).join(",");
       ok("getUserMedia " + name, "ERLAUBT " + tr);
       if (name === "mikrofon") { try { const ac = new (window.AudioContext || window.webkitAudioContext)(); const an = ac.createAnalyser(); ac.createMediaStreamSource(st).connect(an); await new Promise((r) => setTimeout(r, 700)); const b = new Uint8Array(an.fftSize); an.getByteTimeDomainData(b); const peak = Math.max(...b.map((x) => Math.abs(x - 128))); info("mikrofonPegel", "Spitze " + peak + "/128"); ac.close(); } catch (e) { info("mikrofonPegel", errText(e)); } }
       st.getTracks().forEach((t) => t.stop());
-    } catch (e) { no("getUserMedia " + name, errText(e)); }
+    } catch (e) { no("getUserMedia " + name, errText(e) + " nach " + Math.round(performance.now() - t0) + " ms"); }
   }
 }
 function speechTest() {
