@@ -202,6 +202,19 @@ async function runAll() {
   const bad = ORDER.filter((k) => R[k].s === "no").length;
   el("state").textContent = `Fertig: ${ORDER.length} Messpunkte, ${bad} fehlgeschlagen. Mit „Nächste Seite“ blättern.`;
   try { if (navigator.clipboard) navigator.clipboard.writeText(JSON.stringify(R)).catch(() => {}); } catch (e) {}
+  await sendReport();
+}
+// Bericht automatisch an den Worker senden (Claude holt ihn dort ab). Keine Tokens, keine Personendaten.
+async function sendReport() {
+  const q = new URLSearchParams(location.search);
+  const run = /^[a-f0-9]{8,64}$/.test(q.get("run") || "") ? q.get("run") : Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("");
+  const envName = /^[a-z0-9_-]{1,24}$/.test(q.get("env") || "") ? q.get("env") : "page";
+  const results = {};
+  for (const k of ORDER.slice(0, 215)) results[k.replace(/[^\p{L}\p{N} _.:\-\/()]/gu, "_").slice(0, 70)] = { s: R[k].s, v: String(R[k].v).slice(0, 240) };
+  try {
+    const r = await fetch("https://ondo-jarvis-alexa-public-pilot.n4rtvfvj96.workers.dev/v1/probe/report", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ version: 1, run, env: envName, results }) });
+    el("state").textContent += r.status === 204 ? " Bericht gesendet." : ` Senden fehlgeschlagen (${r.status}).`;
+  } catch (e) { el("state").textContent += " Senden fehlgeschlagen (Netz)."; }
 }
 el("again").onclick = runAll;
 el("mic").onclick = async () => { await micTest(); await speechTest(); el("state").textContent = "Mikro/Kamera-Test per Tippen fertig."; };
