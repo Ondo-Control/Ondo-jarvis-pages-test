@@ -3,42 +3,235 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>JARVIS Gespräch</title>
+  <title>JARVIS · Echo Show</title>
   <!-- Von Amazon dokumentierter SDK-Endpunkt; Amazon bietet keine feste Version an. -->
   <script src="https://cdn.html.games.alexa.a2z.com/alexa-html/latest/alexa-html.js"></script>
   <style>
-    :root { color-scheme: dark; font-family: Arial, sans-serif; }
-    body { margin: 0; background: #06111f; color: #f5f8ff; }
-    main { box-sizing: border-box; min-height: 100vh; padding: 44px; }
-    h1 { color: #69e2ff; font-size: 48px; margin: 0 0 10px; }
-    .rule { color: #c9d8ea; font-size: 21px; max-width: 900px; }
-    #status { font-size: 34px; margin: 26px 0 10px; }
-    #countdown { color: #ffd166; font-size: 40px; font-weight: bold; min-height: 54px; }
-    #round { color: #83f2ad; font-size: 20px; margin: 4px 0 14px; }
-    ol { background: #10243b; border-radius: 18px; font-size: 19px; line-height: 1.4;
-         max-height: 190px; overflow: hidden; padding: 18px 18px 18px 54px; }
-    .controls { display: grid; gap: 14px; }
-    button { background: #b4233c; border: 0; border-radius: 14px; color: white;
-             font-size: 24px; padding: 16px 28px; }
-    #resume { background: #16865f; font-size: 30px; font-weight: bold; padding: 22px 30px; width: 100%; }
-    #resume[disabled] { opacity: 0.55; }
+    :root {
+      color-scheme: dark;
+      font-family: "Segoe UI", Arial, sans-serif;
+      font-size: 16px;
+      --ink: #effaff;
+      --muted: #bbccdf;
+      --aqua: #69ebef;
+      --line: rgba(170,220,244,.2);
+      --glass: rgba(13,34,60,.74);
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      color: var(--ink);
+      background: radial-gradient(ellipse at 21% 27%, rgba(11,101,155,.30), transparent 38%),
+                  radial-gradient(ellipse at 96% 88%, rgba(90,53,150,.23), transparent 44%),
+                  linear-gradient(135deg, #04101d 0%, #071b2e 56%, #080f23 100%);
+    }
+    button { font: inherit; cursor: pointer; }
+    button:focus-visible { outline: 3px solid #a6f8ff; outline-offset: 4px; }
+    main { display: flex; flex-direction: column; gap: 16px; min-height: 100vh; padding: 20px 27px 24px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand-mark { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 12px;
+                  color: #092432; background: linear-gradient(145deg, #6de8ef, #abf9cb);
+                  font-size: 24px; font-weight: 800; }
+    h1 { margin: 0; color: #dcfcff; letter-spacing: .22em; font-size: clamp(22px,3vw,32px); line-height: 1; }
+    .tagline { color: #a6c1d7; margin: 4px 0 0; font-size: 13px; letter-spacing: .06em; }
+    @media (forced-colors:active) {
+      .tab[aria-selected="true"], .privacy-action[aria-pressed="true"] { border:2px solid Highlight; }
+      .session-dot { border:1px solid ButtonText; }
+    }
+    .kid-toggle { border: 1px solid var(--line); border-radius: 30px; padding: 10px 15px;
+                  color: #eaf9ff; background: rgba(24,50,80,.65); font-size: 15px; }
+    .kid-toggle[aria-pressed="true"] { background: #224e68; border-color: #8df4e7; }
+    .top-actions { display: flex; align-items: center; gap: 10px; }
+    .session-pill { display:flex; align-items:center; gap:8px; padding:9px 12px; border-radius:30px;
+                    border:1px solid rgba(143,219,237,.25); background:rgba(46,115,141,.22);
+                    color:#c2ebf3; font-size:13px; white-space:nowrap; }
+    .session-dot { width:9px; height:9px; border-radius:50%; background:#83acc3; }
+    .session-pill[data-state="listening"] .session-dot { background:#8bffd0; box-shadow:0 0 13px #8bffd0; }
+    .session-pill[data-state="speaking"] .session-dot { background:#b8a7ff; box-shadow:0 0 13px #b8a7ff; }
+    .session-pill[data-state="music"] .session-dot { background:#ffd388; box-shadow:0 0 13px #ffd388; }
+    .session-pill[data-state="paused"] .session-dot { background:#eac178; }
+    .session-pill[data-state="stopped"] .session-dot { background:#e99ba7; }
+    .layout { flex: 1; min-height: 365px; display: grid; grid-template-columns: minmax(270px, .87fr) minmax(350px, 1.13fr); gap: 17px; }
+    .hero, .workspace { min-width: 0; min-height: 0; border: 1px solid var(--line);
+                        border-radius: 24px; background: var(--glass); backdrop-filter: blur(10px);
+                        box-shadow: 0 15px 40px rgba(0,0,0,.18); }
+    .hero { display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 19px 24px 22px; text-align: center; position: relative; overflow: hidden; }
+    .hero::before { content:""; position:absolute; width: 330px; height: 330px; left:-130px; top:-170px;
+                    background: radial-gradient(circle,rgba(70,222,236,.15),transparent 70%); pointer-events:none; }
+    .avatar { display:grid; place-items:center; width: clamp(138px,19vw,206px); aspect-ratio:1;
+              position:relative; margin: 3px 0 14px; }
+    .avatar::before, .avatar::after { content:""; position:absolute; inset: 8%; border-radius:50%; pointer-events:none; }
+    .avatar::before { border: 2px solid rgba(115,234,244,.45); box-shadow: 0 0 36px rgba(73,204,235,.16);
+                      animation: breathe 4.2s ease-in-out infinite; }
+    .avatar::after { inset:0; border: 1px dashed rgba(152,231,244,.38); animation: spin 28s linear infinite; }
+    .avatar-core { width: 69%; aspect-ratio:1; display:grid; place-items:center; border-radius:50%;
+                   background: radial-gradient(circle at 35% 29%, #e7ffff 0%, #7bebf0 10%, #2088b3 40%, #11304e 70%, #061e37 100%);
+                   box-shadow: 0 0 35px rgba(64,213,246,.41), inset 0 0 24px rgba(187,255,255,.35);
+                   border:1px solid #8fedf9; }
+    .avatar-glyph { font-size: clamp(36px,5.6vw,61px); font-weight: 300; color: #f3ffff; text-shadow: 0 0 22px #e4ffff; }
+    .avatar[data-state="listening"] .avatar-core { box-shadow: 0 0 54px rgba(96,251,202,.67); }
+    .avatar[data-state="listening"]::before { border-color: #80ffd1; animation-duration: 1.4s; }
+    .avatar[data-state="speaking"] .avatar-core { box-shadow: 0 0 58px rgba(134,152,255,.76); }
+    .avatar[data-state="speaking"]::before { border-color:#b9adff; animation-duration:1s; }
+    .avatar[data-state="music"] .avatar-core { box-shadow:0 0 65px rgba(255,205,125,.5); }
+    .avatar[data-state="music"]::before { border-color:#ffd18e; animation-duration:2.6s; }
+    .avatar[data-state="paused"] { opacity: .65; }
+    #status { margin: 0; font-size: clamp(20px,2.7vw,31px); line-height: 1.24; max-width: 470px; }
+    .activity { font-size: 17px; color: #aef5ed; font-weight: 600; margin-top: 11px; min-height: 27px; }
+    .rule { margin: 13px 0 0; max-width: 410px; color: var(--muted); font-size: 15px; line-height: 1.45; }
+    .workspace { display:flex; flex-direction:column; overflow:hidden; }
+    .tabs { display:flex; overflow-x:auto; scroll-snap-type:x proximity; padding:10px 11px 0; gap:4px; border-bottom:1px solid var(--line); scrollbar-width:thin; }
+    .tab { flex:0 0 auto; white-space:nowrap; scroll-snap-align:start; padding: 12px 11px; border: 0; border-radius: 13px 13px 0 0; color: #c5d9ed;
+           background:transparent; font-size: 16px; font-weight: 600; }
+    .tab[aria-selected="true"] { background: rgba(68,159,187,.23); color: #bdffff; box-shadow: inset 0 -3px #64e9e5; }
+    .panel { padding: 17px 19px 20px; flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; }
+    .panel h2 { margin: 0 0 7px; font-size:20px; color:#f1fbff; }
+    .info-line { padding: 13px; border-radius: 13px; background:rgba(74,139,181,.14); border:1px solid var(--line); line-height:1.5; margin-top:11px; }
+    .info-line strong { display:block; color:#b8faf0; margin-bottom:5px; }
+    .info-line p {margin:0; color:#d6e5f3; font-size:14px;}
+    .privacy-action { color:#dffbff; background:rgba(27,104,125,.38);
+                      border:1px solid #5a9eaf; border-radius:12px; min-height:44px;
+                      margin:9px 10px 0 0; padding:10px 14px; font-size:15px; font-weight:600; }
+    .privacy-action[aria-pressed="true"] { border-color:#fff0b2; background:rgba(120,80,28,.43); }
+    .note { font-size:13px; line-height:1.4; color:var(--muted); margin:12px 0 0; }
+    .muted { color:var(--muted); font-size:14px; line-height:1.5; margin:0 0 13px; }
+    #chat { margin: 0; list-style:none; padding:0; display:flex; flex-direction:column; gap:10px; }
+    #chat li { background:rgba(92,159,198,.13); border:1px solid rgba(149,212,234,.19); border-radius:16px;
+               padding:12px 15px; color:#f2fbff; line-height:1.42; overflow-wrap:anywhere; font-size:17px; }
+    #chat li:nth-child(even) { background:rgba(71,198,184,.11); }
+    .empty { border: 1px dashed rgba(155,213,242,.24); border-radius:16px; padding:19px;
+             color:#d1e7f3; line-height:1.45; }
+    .feature-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .feature { display:flex; align-items:center; gap:12px; padding:13px 11px; border-radius:16px;
+               border:1px solid rgba(163,215,245,.2); background:rgba(50,104,141,.14); min-width:0; }
+    .feature-icon { display:grid; place-items:center; flex:0 0 38px; height:38px; font-size:25px;
+                    border-radius:12px; background:rgba(84,201,214,.18); }
+    .feature strong { display:block; font-size:16px; }
+    .feature small { display:block; color: #b2c8de; font-size:12px; margin-top:4px; line-height:1.3; }
+    #round { color:#a9e4bb; font-size:15px; line-height:1.45; margin:7px 0 14px; }
+    #events { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:6px; }
+    #events li { font-size:14px; color:#d2e3f3; border-left:2px solid #3e94a8; padding:7px 11px;
+                 background:rgba(54,113,145,.1); overflow-wrap:anywhere; }
+    .controls { display:flex; align-items:center; justify-content:flex-end; gap:12px; }
+    .controls button { border:1px solid rgba(179,219,241,.24); border-radius:14px; color:white; font-size:17px;
+                       font-weight:700; padding:13px 21px; min-height:47px; }
+    #resume { background:linear-gradient(125deg,#218e7f,#2476aa); }
+    #resume[disabled] { opacity:.48; }
+    #finish { background:rgba(137,37,67,.52); }
+    .privacy-note { color:#87a7c5; font-size:12px; margin-right:auto; }
+    body.kid-view .feature-icon { background:rgba(246,191,109,.22); transform:scale(1.06); }
+    body.kid-view .avatar-core { background:radial-gradient(circle at 35% 29%,#fffde3,#ffd58d 19%,#8b70d5 58%,#19395a); }
+    body.kid-view .tab[aria-selected="true"] { box-shadow:inset 0 -3px #ffd58d; }
+    body.kid-view .hero { background:linear-gradient(135deg,rgba(60,56,115,.84),rgba(29,77,114,.74)); }
+    body.kid-view .feature { border-color:rgba(255,217,155,.36); background:rgba(180,122,50,.13); }
+    body.kid-view #status { color:#fff3d6; }
+    .tab:focus-visible, .privacy-action:focus-visible { outline:3px solid #aefbff; outline-offset:-3px; }
+    @keyframes breathe { 0%,100%{transform:scale(.96);opacity:.55} 50%{transform:scale(1.045);opacity:1} }
+    @keyframes spin { to {transform:rotate(360deg)} }
+    @media (prefers-reduced-motion:reduce){ .avatar::before,.avatar::after{animation:none} }
+    @media (max-width:760px) {
+      main{padding:14px;gap:11px;} .layout{grid-template-columns:1fr;min-height:0}
+      .hero{min-height:265px;padding:13px;} .avatar{width:125px;margin-bottom:7px}
+      .workspace{min-height:255px} .topbar{gap:8px}.kid-toggle{font-size:13px;padding:9px}
+      .controls button{font-size:15px;padding:12px} .feature{padding:10px}
+      .session-pill { font-size:12px; padding:8px; }
+      .top-actions { gap:5px; }
+      .tagline { font-size:11px; }
+    }
   </style>
 </head>
 <body>
   <main>
-    <h1>JARVIS</h1>
-    <p class="rule">JARVIS hört im Hintergrund zu und antwortet, wenn du ihn ansprichst
-      („Jarvis, …“) oder gerade mit ihm sprichst. Nach einer längeren Pause tippe auf
-      „Weiterreden“.</p>
-    <p id="status">Initialisierung …</p>
-    <div id="countdown">–</div>
-    <p id="round"></p>
-    <ol id="chat" aria-label="Gespräch"></ol>
-    <ol id="events"></ol>
-    <div class="controls">
-      <button id="resume" type="button" hidden>Weiterreden</button>
-      <button id="finish" type="button">Unterhaltung beenden</button>
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">✦</span><div>
+        <h1>JARVIS</h1><p class="tagline">Dein Sprachassistent · Echo Show</p>
+      </div></div>
+      <div class="top-actions">
+        <div id="sessionPill" class="session-pill" data-state="ready" aria-live="off">
+          <span class="session-dot" aria-hidden="true"></span>
+          <span id="sessionLabel">Bereit</span>
+        </div>
+        <button id="kidMode" class="kid-toggle" type="button" aria-pressed="false">✨ Kinderansicht</button>
+      </div>
+    </header>
+    <div class="layout">
+      <section class="hero" aria-label="JARVIS Sprachstatus">
+        <div class="avatar" id="avatar" data-state="ready" role="img" aria-label="Abstrakter JARVIS Avatar">
+          <div class="avatar-core"><span class="avatar-glyph" aria-hidden="true">✧</span></div>
+        </div>
+        <p id="status" role="status" aria-live="polite">Initialisierung …</p>
+        <div class="activity" id="countdown">–</div>
+        <p class="rule">Sprich mit JARVIS. Im Musikmodus: „Alexa“ und deine Frage, solange JARVIS geöffnet bleibt.</p>
+      </section>
+      <section class="workspace" aria-label="JARVIS Ansichten">
+        <nav class="tabs" role="tablist" aria-label="Ansicht wählen">
+          <button class="tab" id="tabTalk" role="tab" type="button" aria-controls="talkPanel" aria-selected="true">Gespräch</button>
+          <button class="tab" id="tabFunctions" role="tab" type="button" aria-controls="functionsPanel" aria-selected="false">Funktionen</button>
+          <button class="tab" id="tabInfo" role="tab" type="button" aria-controls="infoPanel" aria-selected="false">Status</button>
+          <button class="tab" id="tabRights" role="tab" type="button" aria-controls="rightsPanel" aria-selected="false">Rechte</button>
+          <button class="tab" id="tabSettings" role="tab" type="button" aria-controls="settingsPanel" aria-selected="false">Einstellungen</button>
+          <button class="tab" id="tabPrivacy" role="tab" type="button" aria-controls="privacyPanel" aria-selected="false">Datenschutz</button>
+        </nav>
+        <div class="panel" id="talkPanel" role="tabpanel" aria-labelledby="tabTalk">
+          <h2>Unser Gespräch</h2>
+          <p class="muted">Gesprochene Fragen und JARVIS-Antworten erscheinen hier.</p>
+          <p class="empty" id="chatPlaceholder">Frag JARVIS etwas. Du kannst natürlich sprechen – während laufender Musik gelten die Alexa-Hörfenstergrenzen.</p>
+          <ol id="chat" aria-label="Gesprächsverlauf"></ol>
+        </div>
+        <div class="panel" id="functionsPanel" role="tabpanel" aria-labelledby="tabFunctions" hidden>
+          <h2>Was JARVIS unterstützt</h2>
+          <p class="muted">Per Sprache nutzbar, soweit die jeweilige Funktion verbunden und freigegeben ist.</p>
+          <div class="feature-grid">
+            <div class="feature"><span class="feature-icon" aria-hidden="true">☁️</span><div><strong>Wetter</strong><small>Vorhersagen und Informationen</small></div></div>
+            <div class="feature"><span class="feature-icon" aria-hidden="true">🔎</span><div><strong>Wissen</strong><small>Fragen, Web und Erklärungen</small></div></div>
+            <div class="feature"><span class="feature-icon" aria-hidden="true">🌍</span><div><strong>Übersetzen</strong><small>Sprachen im Gespräch</small></div></div>
+            <div class="feature"><span class="feature-icon" aria-hidden="true">🎵</span><div><strong>Musik</strong><small>Spotify, falls verbunden</small></div></div>
+            <div class="feature"><span class="feature-icon" aria-hidden="true">📆</span><div><strong>Kalender</strong><small>Freigegebene Kalenderquellen</small></div></div>
+            <div class="feature"><span class="feature-icon" aria-hidden="true">🧠</span><div><strong>Gedächtnis</strong><small>Nur mit berechtigtem Profil</small></div></div>
+          </div>
+        </div>
+        <div class="panel" id="infoPanel" role="tabpanel" aria-labelledby="tabInfo" hidden>
+          <h2>Gesprächsstatus</h2>
+          <p class="muted">Lokale Hinweise dieser Sitzung. Keine Kontofreigaben und keine privaten Speicherinhalte.</p>
+          <p id="round"></p>
+          <ol id="events" aria-label="Technische Sitzungsereignisse"></ol>
+        </div>
+        <div class="panel" id="rightsPanel" role="tabpanel" aria-labelledby="tabRights" hidden>
+          <h2>Berechtigungen</h2>
+          <p class="muted">Diese Ansicht informiert, sie kann keine Rechte erteilen.</p>
+          <div class="info-line"><strong>🔒 Geschützte Funktionen</strong><p>Private Daten, Gedächtnis und Familienfunktionen unterliegen den JARVIS-Profil- und Owner-Freigaben.</p></div>
+          <div class="info-line"><strong>🛡️ Keine Bildschirm-Freigabe</strong><p>Tippen auf diese Darstellung aktiviert weder Mikrofonrechte noch Cloud-Zugänge, Geräte oder persönliche Dienste.</p></div>
+        </div>
+        <div class="panel" id="settingsPanel" role="tabpanel" aria-labelledby="tabSettings" hidden>
+          <h2>Einstellungen</h2>
+          <p class="muted">Die verbindlichen Diensteinstellungen werden im vorhandenen Alexa/JARVIS-Einstellungsbild verwaltet. Sprich in der aktiven JARVIS-Sitzung: „Zeige die JARVIS-Einstellungen“ (wenn die Funktion freigeschaltet ist).</p>
+          <div class="info-line"><strong>🎵 Musikgerät</strong><p>Spotify-Zielgerät und Musikanbieter können dort eingerichtet werden. Hier werden keine Zugangsdaten abgefragt.</p></div>
+          <div class="info-line"><strong>📅 Kalenderquellen</strong><p>Nur ausdrücklich eingerichtete Kalender werden verwendet. Diese Seite verändert keine Quellen.</p></div>
+          <div class="info-line"><strong>✨ Kinderansicht</strong><p>Die Schaltfläche oben ändert ausschließlich die Darstellung dieses Bildschirms – keine Alters- oder Profilrechte.</p></div>
+        </div>
+        <div class="panel" id="privacyPanel" role="tabpanel" aria-labelledby="tabPrivacy" hidden>
+          <h2>Datenschutz & Aktivität</h2>
+          <p class="muted">Die Anzeige verarbeitet nur die vom JARVIS-Skill übermittelten Gesprächs- und Statusmeldungen.</p>
+          <div class="info-line"><strong>👁️ Sichtbarer Verlauf</strong><p>Die letzten Gesprächszeilen erscheinen auf dem Echo-Display. Keine zusätzliche Hintergrundaufzeichnung durch diese Oberfläche.</p></div>
+          <div class="info-line"><strong>🔐 Vertrauliche Daten</strong><p>Konten, Berechtigungen und Gedächtnisspeicher werden außerhalb dieser Anzeige durch die vorgesehenen JARVIS-Sicherheitsfunktionen kontrolliert.</p></div>
+          <div class="info-line">
+            <strong>👁️ Bildschirm-Privatansicht</strong>
+            <p>Unterdrückt neue Gesprächszeilen auf diesem Bildschirm und leert den sichtbaren Verlauf. Dies ändert keine Speicherung oder Rechte im JARVIS-Backend.</p>
+            <button id="screenPrivacy" class="privacy-action" type="button" aria-pressed="false">Privatansicht einschalten</button>
+            <button id="clearScreen" class="privacy-action" type="button">Gesprächsanzeige leeren</button>
+          </div>
+          <p class="note">Nur lokale Anzeige. Spracherkennung, Skills und Cloud-Verarbeitung werden hier nicht umgeschaltet.</p>
+        </div>
+      </section>
     </div>
+    <footer class="controls">
+      <span class="privacy-note">Anzeige ohne Konto- oder Rechteänderungen</span>
+      <button id="resume" type="button" hidden>Weiterreden</button>
+      <button id="finish" type="button">Beenden</button>
+    </footer>
   </main>
   <script src="probe-loader.js"></script>
   <script>
@@ -83,8 +276,98 @@
     const resumeElement = document.getElementById("resume");
 
     const chatElement = document.getElementById("chat");
+    const avatarElement = document.getElementById("avatar");
+    const visibleModeLabels = Object.freeze({
+      ready: "Bereit", listening: "Hört zu", speaking: "Spricht",
+      music: "Musikmodus", paused: "Pausiert", stopped: "Beendet",
+    });
+    function reflectVoiceMode(mode) {
+      const label = visibleModeLabels[mode] || visibleModeLabels.ready;
+      if (avatarElement && typeof avatarElement.setAttribute === "function") {
+        avatarElement.setAttribute("data-state", mode);
+        avatarElement.setAttribute("aria-label", "JARVIS – " + label);
+      }
+      const pill = document.getElementById("sessionPill");
+      if (pill && typeof pill.setAttribute === "function") pill.setAttribute("data-state", mode);
+      document.getElementById("sessionLabel").textContent = label;
+    }
+    const views = Object.freeze([
+      ["talk", "talkPanel", "tabTalk"],
+      ["functions", "functionsPanel", "tabFunctions"],
+      ["info", "infoPanel", "tabInfo"],
+      ["rights", "rightsPanel", "tabRights"],
+      ["settings", "settingsPanel", "tabSettings"],
+      ["privacy", "privacyPanel", "tabPrivacy"],
+    ]);
+    function selectView(name) {
+      if (!views.some(([key]) => key === name)) return;
+      for (const [key, panel, tab] of views) {
+        const selected = key === name;
+        document.getElementById(panel).hidden = !selected;
+        const button = document.getElementById(tab);
+        button.tabIndex = selected ? 0 : -1;
+        if (typeof button.setAttribute === "function") {
+          button.setAttribute("aria-selected", String(selected));
+        }
+      }
+    }
+    // Native keyboard tablist navigation, without inventing a new Alexa action.
+    for (const [name, , tab] of views) {
+      document.getElementById(tab).addEventListener("keydown", (event) => {
+        const oldIndex = views.findIndex(([key]) => key === name);
+        let newIndex = oldIndex;
+        if (event.key === "ArrowRight") newIndex = (oldIndex + 1) % views.length;
+        else if (event.key === "ArrowLeft") newIndex = (oldIndex + views.length - 1) % views.length;
+        else if (event.key === "Home") newIndex = 0;
+        else if (event.key === "End") newIndex = views.length - 1;
+        else return;
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        selectView(views[newIndex][0]);
+        const target = document.getElementById(views[newIndex][2]);
+        if (typeof target.focus === "function") target.focus();
+      });
+    }
+    document.getElementById("tabTalk").addEventListener("click", () => selectView("talk"));
+    document.getElementById("tabFunctions").addEventListener("click", () => selectView("functions"));
+    document.getElementById("tabInfo").addEventListener("click", () => selectView("info"));
+    document.getElementById("tabRights").addEventListener("click", () => selectView("rights"));
+    document.getElementById("tabSettings").addEventListener("click", () => selectView("settings"));
+    document.getElementById("tabPrivacy").addEventListener("click", () => selectView("privacy"));
+    selectView("talk");
+    let kidView = false;
+    const kidButton = document.getElementById("kidMode");
+    kidButton.addEventListener("click", () => {
+      kidView = !kidView;
+      if (document.body && document.body.classList) {
+        document.body.classList.toggle("kid-view", kidView);
+      }
+      kidButton.textContent = kidView ? "Normale Ansicht" : "✨ Kinderansicht";
+      if (typeof kidButton.setAttribute === "function") {
+        kidButton.setAttribute("aria-pressed", String(kidView));
+      }
+    });
+    let screenPrivate = false;
+    const chatPlaceholder = document.getElementById("chatPlaceholder");
+    function clearVisibleChat() {
+      while (chatElement.children.length > 0) chatElement.removeChild(chatElement.firstChild);
+      chatPlaceholder.hidden = false;
+      chatPlaceholder.textContent = screenPrivate
+        ? "Privatansicht aktiv. Gesprächsinhalte werden auf diesem Bildschirm nicht angezeigt."
+        : "Frag JARVIS etwas. Neue Antworten erscheinen hier.";
+    }
+    document.getElementById("clearScreen").addEventListener("click", clearVisibleChat);
+    document.getElementById("screenPrivacy").addEventListener("click", () => {
+      screenPrivate = !screenPrivate;
+      const privacyButton = document.getElementById("screenPrivacy");
+      privacyButton.textContent = screenPrivate ? "Privatansicht ausschalten" : "Privatansicht einschalten";
+      if (typeof privacyButton.setAttribute === "function") {
+        privacyButton.setAttribute("aria-pressed", String(screenPrivate));
+      }
+      clearVisibleChat();
+    });
     function addChat(who, text) {
-      if (typeof text !== "string" || !text) return;
+      if (screenPrivate || typeof text !== "string" || !text) return;
+      chatPlaceholder.hidden = true;
       const item = document.createElement("li");
       item.textContent = `${who}: ${text.slice(0, 220)}`;
       chatElement.appendChild(item);
@@ -132,6 +415,7 @@
       }
       stopped = true;
       phase = "STOPPED";
+      reflectVoiceMode("stopped");
       micOpen = false;
       waitingForOpen = false;
       requestEpoch += 1;
@@ -148,6 +432,7 @@
       if (stopped) return;
       musicFocus = true;
       phase = "MUSIC_FOCUS";
+      reflectVoiceMode("music");
       requestEpoch += 1;
       waitingForOpen = false;
       clearTurnTimers();
@@ -160,6 +445,7 @@
       if (stopped || !musicFocus) return;
       musicFocus = false;
       phase = "AWAITING_NATIVE_OPEN";
+      reflectVoiceMode("ready");
       setStatus("Musik pausiert — JARVIS hört wieder zu");
       if (!micOpen) armNativeOpenWatchdog("Ende des Musikmodus");
     }
@@ -167,6 +453,7 @@
     function enterPausedState(reason = "Gespräch pausiert") {
       if (stopped) return;
       phase = "PAUSED";
+      reflectVoiceMode("paused");
       micOpen = false;
       waitingForOpen = false;
       requestEpoch += 1;
@@ -330,6 +617,7 @@
           resumeElement.hidden = true;
           resumeElement.disabled = false;
           phase = "LISTENING";
+          reflectVoiceMode("listening");
           countdownElement.textContent = "Ich höre zu";
           statusElement.textContent = "Hörfenster offen";
         });
@@ -340,7 +628,12 @@
               phase === "AWAITING_FALLBACK_OPEN" || waitingForOpen) {
             return;
           }
-          if (phase === "SPEAKING" || musicFocus) return;
+          if (musicFocus) {
+            reflectVoiceMode("music");
+            statusElement.textContent = "Musikmodus — JARVIS bleibt geöffnet";
+            return;
+          }
+          if (phase === "SPEAKING") return;
           bootstrapId = clearTimer(bootstrapId);
           nativeWatchdogId = clearTimer(nativeWatchdogId);
           openWatchdogId = clearTimer(openWatchdogId);
@@ -348,6 +641,7 @@
           waitingForOpen = false;
           countdownElement.textContent = "–";
           statusElement.textContent = "Ich warte";
+          reflectVoiceMode("ready");
           armGrace();
         });
         alexaClient.speech.onStarted(() => {
@@ -359,11 +653,17 @@
           nativeWatchdogId = clearTimer(nativeWatchdogId);
           if (!waitingForOpen) phase = "SPEAKING";
           countdownElement.textContent = "Antwort";
+          reflectVoiceMode("speaking");
           setStatus("JARVIS spricht");
         });
         alexaClient.speech.onStopped(() => {
           if (stopped) return;
-          if (phase === "BOOTSTRAP" || musicFocus) return;
+          if (musicFocus) {
+            reflectVoiceMode("music");
+            statusElement.textContent = "Musikmodus — JARVIS bleibt geöffnet";
+            return;
+          }
+          if (phase === "BOOTSTRAP") return;
           if (waitingForOpen) return;
           if (micOpen) {
             phase = "LISTENING";
@@ -382,6 +682,7 @@
           } else if (incoming.action === "answer") {
             addChat("Du", incoming.heard);
             addChat("Jarvis", incoming.said);
+            selectView("talk");
             graceId = clearTimer(graceId);
             if (phase === "AWAITING_TURN_RESULT") phase = "PROCESSING";
             resumeElement.hidden = true;
@@ -393,8 +694,14 @@
             // Nicht angesprochen oder nicht verstanden: leise weiter, Alexa öffnet selbst.
             graceId = clearTimer(graceId);
             if (!musicFocus && !micOpen && !waitingForOpen) armNativeOpenWatchdog("ignorierter Äußerung");
-            countdownElement.textContent = "Ich höre zu";
-            statusElement.textContent = "Nicht angesprochen — ich warte";
+            if (musicFocus) {
+              countdownElement.textContent = "Musik";
+              statusElement.textContent = "Musikmodus — JARVIS bleibt geöffnet";
+              reflectVoiceMode("music");
+            } else {
+              countdownElement.textContent = "Ich höre zu";
+              statusElement.textContent = "Nicht angesprochen — ich warte";
+            }
           }
         });
         // Die Launch-Antwort öffnet das erste Hörfenster nativ; der Bootstrap
