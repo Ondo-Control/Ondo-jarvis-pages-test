@@ -71,6 +71,7 @@
     let waitingForOpen = false;
     let stopped = false;
     let phase = "BOOTSTRAP";
+    let musicFocus = false;
     let requestEpoch = 0;
     let finishSent = false;
     let consecutiveFailures = 0;
@@ -141,6 +142,28 @@
       if (notifyBackend) sendFinishOnce();
     }
 
+    // Music focus suppresses *only* autonomous microphone reopen requests.
+    // Alexa's normal wake word remains available while the HTML skill stays up.
+    function enterMusicFocus() {
+      if (stopped) return;
+      musicFocus = true;
+      phase = "MUSIC_FOCUS";
+      requestEpoch += 1;
+      waitingForOpen = false;
+      clearTurnTimers();
+      resumeElement.hidden = true;
+      countdownElement.textContent = "Musik";
+      setStatus("Musikmodus — für Fragen: Alexa und deine Frage");
+    }
+
+    function leaveMusicFocus() {
+      if (stopped || !musicFocus) return;
+      musicFocus = false;
+      phase = "AWAITING_NATIVE_OPEN";
+      setStatus("Musik pausiert — JARVIS hört wieder zu");
+      if (!micOpen) armNativeOpenWatchdog("Ende des Musikmodus");
+    }
+
     function enterPausedState(reason = "Gespräch pausiert") {
       if (stopped) return;
       phase = "PAUSED";
@@ -166,7 +189,7 @@
 
     function armBootstrapObservation() {
       bootstrapId = clearTimer(bootstrapId);
-      if (stopped || micOpen) return;
+      if (stopped || micOpen || musicFocus) return;
       phase = "BOOTSTRAP";
       countdownElement.textContent = "Bereit";
       setStatus("Erstes Hörfenster wird erwartet");
@@ -181,7 +204,7 @@
 
     function armGrace() {
       graceId = clearTimer(graceId);
-      if (stopped) return;
+      if (stopped || musicFocus) return;
       phase = "AWAITING_TURN_RESULT";
       graceId = window.setTimeout(() => {
         graceId = null;
@@ -193,7 +216,7 @@
 
     function armNativeOpenWatchdog(reason) {
       nativeWatchdogId = clearTimer(nativeWatchdogId);
-      if (stopped || micOpen || waitingForOpen || phase === "PAUSED") return;
+      if (stopped || musicFocus || micOpen || waitingForOpen || phase === "PAUSED") return;
       phase = "AWAITING_NATIVE_OPEN";
       nativeWatchdogId = window.setTimeout(() => {
         nativeWatchdogId = null;
@@ -207,7 +230,7 @@
     function requestListeningTurn(isResume) {
       nativeWatchdogId = clearTimer(nativeWatchdogId);
       graceId = clearTimer(graceId);
-      if (stopped || waitingForOpen) return;
+      if (stopped || musicFocus || waitingForOpen) return;
       if (micOpen) {
         phase = "LISTENING";
         resumeElement.hidden = true;
@@ -317,7 +340,7 @@
               phase === "AWAITING_FALLBACK_OPEN" || waitingForOpen) {
             return;
           }
-          if (phase === "SPEAKING") return;
+          if (phase === "SPEAKING" || musicFocus) return;
           bootstrapId = clearTimer(bootstrapId);
           nativeWatchdogId = clearTimer(nativeWatchdogId);
           openWatchdogId = clearTimer(openWatchdogId);
@@ -340,7 +363,7 @@
         });
         alexaClient.speech.onStopped(() => {
           if (stopped) return;
-          if (phase === "BOOTSTRAP") return;
+          if (phase === "BOOTSTRAP" || musicFocus) return;
           if (waitingForOpen) return;
           if (micOpen) {
             phase = "LISTENING";
@@ -351,7 +374,10 @@
         });
         alexaClient.skill.onMessage((incoming) => {
           if (stopped || !incoming || typeof incoming !== "object") return;
-          if (incoming.action === "listening" && Number.isInteger(incoming.sequence)) {
+          if (incoming.action === "music_mode" && typeof incoming.playing === "boolean") {
+            if (incoming.playing) enterMusicFocus();
+            else leaveMusicFocus();
+          } else if (incoming.action === "listening" && Number.isInteger(incoming.sequence)) {
             addEvent(`Hörfenster ${incoming.sequence} bestätigt`);
           } else if (incoming.action === "answer") {
             addChat("Du", incoming.heard);
@@ -359,11 +385,14 @@
             graceId = clearTimer(graceId);
             if (phase === "AWAITING_TURN_RESULT") phase = "PROCESSING";
             resumeElement.hidden = true;
-            setStatus("Antwort wird ausgegeben");
+            if (musicFocus) {
+              phase = "MUSIC_FOCUS";
+              setStatus("JARVIS antwortet — Musikmodus bleibt aktiv");
+            } else setStatus("Antwort wird ausgegeben");
           } else if (incoming.action === "ignored") {
             // Nicht angesprochen oder nicht verstanden: leise weiter, Alexa öffnet selbst.
             graceId = clearTimer(graceId);
-            if (!micOpen && !waitingForOpen) armNativeOpenWatchdog("ignorierter Äußerung");
+            if (!musicFocus && !micOpen && !waitingForOpen) armNativeOpenWatchdog("ignorierter Äußerung");
             countdownElement.textContent = "Ich höre zu";
             statusElement.textContent = "Nicht angesprochen — ich warte";
           }
