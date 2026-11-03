@@ -36,6 +36,10 @@
                   font-size: 24px; font-weight: 800; }
     h1 { margin: 0; color: #dcfcff; letter-spacing: .22em; font-size: clamp(22px,3vw,32px); line-height: 1; }
     .tagline { color: #a6c1d7; margin: 4px 0 0; font-size: 13px; letter-spacing: .06em; }
+    @media (forced-colors:active) {
+      .tab[aria-selected="true"], .privacy-action[aria-pressed="true"] { border:2px solid Highlight; }
+      .session-dot { border:1px solid ButtonText; }
+    }
     .kid-toggle { border: 1px solid var(--line); border-radius: 30px; padding: 10px 15px;
                   color: #eaf9ff; background: rgba(24,50,80,.65); font-size: 15px; }
     .kid-toggle[aria-pressed="true"] { background: #224e68; border-color: #8df4e7; }
@@ -79,11 +83,11 @@
     .activity { font-size: 17px; color: #aef5ed; font-weight: 600; margin-top: 11px; min-height: 27px; }
     .rule { margin: 13px 0 0; max-width: 410px; color: var(--muted); font-size: 15px; line-height: 1.45; }
     .workspace { display:flex; flex-direction:column; overflow:hidden; }
-    .tabs { display:flex; overflow-x:auto; padding:10px 11px 0; gap:4px; border-bottom:1px solid var(--line); scrollbar-width:thin; }
-    .tab { flex:0 0 auto; white-space:nowrap; padding: 12px 11px; border: 0; border-radius: 13px 13px 0 0; color: #c5d9ed;
+    .tabs { display:flex; overflow-x:auto; scroll-snap-type:x proximity; padding:10px 11px 0; gap:4px; border-bottom:1px solid var(--line); scrollbar-width:thin; }
+    .tab { flex:0 0 auto; white-space:nowrap; scroll-snap-align:start; padding: 12px 11px; border: 0; border-radius: 13px 13px 0 0; color: #c5d9ed;
            background:transparent; font-size: 16px; font-weight: 600; }
     .tab[aria-selected="true"] { background: rgba(68,159,187,.23); color: #bdffff; box-shadow: inset 0 -3px #64e9e5; }
-    .panel { padding: 17px 19px 20px; flex:1; min-height:0; overflow:auto; }
+    .panel { padding: 17px 19px 20px; flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; }
     .panel h2 { margin: 0 0 7px; font-size:20px; color:#f1fbff; }
     .info-line { padding: 13px; border-radius: 13px; background:rgba(74,139,181,.14); border:1px solid var(--line); line-height:1.5; margin-top:11px; }
     .info-line strong { display:block; color:#b8faf0; margin-bottom:5px; }
@@ -203,7 +207,7 @@
         </div>
         <div class="panel" id="settingsPanel" role="tabpanel" aria-labelledby="tabSettings" hidden>
           <h2>Einstellungen</h2>
-          <p class="muted">Die verbindlichen Diensteinstellungen werden im vorhandenen Alexa/JARVIS-Einstellungsbild verwaltet.</p>
+          <p class="muted">Die verbindlichen Diensteinstellungen werden im vorhandenen Alexa/JARVIS-Einstellungsbild verwaltet. Sprich in der aktiven JARVIS-Sitzung: „Zeige die JARVIS-Einstellungen“ (wenn die Funktion freigeschaltet ist).</p>
           <div class="info-line"><strong>🎵 Musikgerät</strong><p>Spotify-Zielgerät und Musikanbieter können dort eingerichtet werden. Hier werden keine Zugangsdaten abgefragt.</p></div>
           <div class="info-line"><strong>📅 Kalenderquellen</strong><p>Nur ausdrücklich eingerichtete Kalender werden verwendet. Diese Seite verändert keine Quellen.</p></div>
           <div class="info-line"><strong>✨ Kinderansicht</strong><p>Die Schaltfläche oben ändert ausschließlich die Darstellung dieses Bildschirms – keine Alters- oder Profilrechte.</p></div>
@@ -329,6 +333,7 @@
     document.getElementById("tabRights").addEventListener("click", () => selectView("rights"));
     document.getElementById("tabSettings").addEventListener("click", () => selectView("settings"));
     document.getElementById("tabPrivacy").addEventListener("click", () => selectView("privacy"));
+    selectView("talk");
     let kidView = false;
     const kidButton = document.getElementById("kidMode");
     kidButton.addEventListener("click", () => {
