@@ -15,24 +15,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build:
+    name: Package existing JARVIS site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact published version
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify JARVIS entrypoint
+        run: test -s jarvis-node/index.html
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
   deploy:
+    name: Publish completed Pages artifact
+    needs: build
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - name: Configure Pages
         uses: actions/configure-pages@v5
         with:
           enablement: true
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
       - name: Deploy
         id: deployment
         uses: actions/deploy-pages@v4
